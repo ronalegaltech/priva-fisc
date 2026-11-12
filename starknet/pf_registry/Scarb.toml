@@ -1,0 +1,30 @@
+[package]
+name = "pf_registry"
+version = "0.1.0"
+edition = "2024_07"
+
+[dependencies]
+starknet = "2.21.0"
+pf_batch_k10_verifier = { path = "../pf_batch_k10_verifier" }
+garaga = { git = "https://github.com/keep-starknet-strange/garaga.git", rev = "d97b4d3269fe83ac1a4587d23469e78e9ebe20e9" }
+
+[dev-dependencies]
+snforge_std = "0.64.1"
+assert_macros = "2.21.0"
+
+[cairo]
+sierra-replace-ids = false
+
+[[target.starknet-contract]]
+casm = true
+# Also emit the verifier and the ECIP helper class so all three can be declared from this package.
+build-external-contracts = [
+    "garaga::universal_ecip::UniversalECIP",
+    "pf_batch_k10_verifier::honk_verifier::UltraKeccakZKHonkVerifier",
+]
+
+[target-defaults.test]
+build-external-contracts = [
+    "garaga::universal_ecip::UniversalECIP",
+    "pf_batch_k10_verifier::honk_verifier::UltraKeccakZKHonkVerifier",
+]
