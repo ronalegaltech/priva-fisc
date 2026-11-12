@@ -1,0 +1,20 @@
+{
+ "_note": "Authority keys that proofs may be checked against. Public certificates only (see the data-firewall exception in README.md). `key_hash` is what the circuits publish; recompute it from a certificate with tools/efi/keyhash.py.",
+ "keys": [
+  {
+   "id": "me-efi-test-2020",
+   "jurisdiction": "ME",
+   "environment": "test",
+   "status": "development only: test-environment signer, certificate expired 2023-08-26",
+   "key_hash": "0x14ae4a9f026841216067483cf5510ef8698b16e4443e44eecfbf8319d687577f",
+   "subject": "2.5.4.5=40619+CN=Poreska uprava,O=Poreska uprava+2.5.4.97=VATME-11044760,OU=Pravno lice,C=ME",
+   "issuer": "CN=PostaCG CA,O=PostaCG,C=me",
+   "serial_number": "0x5d02e0ce",
+   "not_before": "2020-08-26T09:34:29+00:00",
+   "not_after": "2023-08-26T10:04:29+00:00",
+   "certificate_sha256": "1749216f0f5075da52bd97b2f9d900b86dc12a5096de3615c0815044164dc1df",
+   "modulus": "0xad5f0d97f4b0b3fc894f7282e13a6848017a70185f01971e5457a6f582e8b97af062729712c1d09b85c9a30aab9bc0188b20fe6bf9845201db6dd367126aa00e161d1df480dbaf3885222a459a4c025c64f69ac4e11cc8432a83358f298adf0921bc5e4ebfa5dfda7f0af058f4f4fb1b852f7a2551a26045da86ea31b2d1eff1ed7c4cf344b3b4c1eb9d8e600304a1c50d98858b2072fdcefbff481213b9ad2f3f3a1a17634cea0ebe316040d417b4823115228d130565ad1431dd3a6a4afa4adb0fc5734878306cedd692c20c57103ca2e60d439cfacb75897d1dda81f36fe8310fccdf58a78f1b86a3a7a0b14753f42da53a4829218f61e7099ed914abbdb5",
+   "source": "RegisterInvoiceResponse signed by the EFI test CIS on 2021-10-13, published in the public repository github.com/djordjen/ElektronskaFiskalizacijaPython (Fiskalizacija.ipynb)"
+  }
+ ]
+}

@@ -1,0 +1,8 @@
+[package]
+name = "rsa_key_hash"
+type = "bin"
+authors = [""]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+pf_xmldsig = { path = "../pf_xmldsig" }
