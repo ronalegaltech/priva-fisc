@@ -1,0 +1,10 @@
+[package]
+name = "pf_agg"
+type = "lib"
+authors = [""]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+pf_efi = { path = "../pf_efi" }
+poseidon = { tag = "v0.3.0", git = "https://github.com/noir-lang/poseidon" }
+bb_proof_verification = { tag = "v6.0.0", git = "https://github.com/AztecProtocol/aztec-packages", directory = "barretenberg/noir/bb_proof_verification" }

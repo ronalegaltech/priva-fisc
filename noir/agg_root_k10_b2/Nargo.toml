@@ -1,0 +1,9 @@
+[package]
+name = "agg_root_k10_b2"
+type = "bin"
+authors = [""]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+pf_agg = { path = "../pf_agg" }
+bb_proof_verification = { tag = "v6.0.0", git = "https://github.com/AztecProtocol/aztec-packages", directory = "barretenberg/noir/bb_proof_verification" }

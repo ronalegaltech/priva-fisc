@@ -1,0 +1,8 @@
+[package]
+name = "agg_leaf_k10_open"
+type = "bin"
+authors = [""]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+pf_efi = { path = "../pf_efi" }
