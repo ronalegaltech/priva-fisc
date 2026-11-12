@@ -6,7 +6,7 @@ edition = "2024_07"
 [dependencies]
 starknet = "2.21.0"
 pf_batch_k10_verifier = { path = "../pf_batch_k10_verifier" }
-pf_agg_root_k10_b2_verifier = { path = "../pf_agg_root_k10_b2_verifier" }
+pf_agg_top_verifier = { path = "../pf_agg_top_verifier" }
 garaga = { git = "https://github.com/keep-starknet-strange/garaga.git", rev = "d97b4d3269fe83ac1a4587d23469e78e9ebe20e9" }
 
 [dev-dependencies]
@@ -22,12 +22,12 @@ casm = true
 build-external-contracts = [
     "garaga::universal_ecip::UniversalECIP",
     "pf_batch_k10_verifier::honk_verifier::PfBatchK10Verifier",
-    "pf_agg_root_k10_b2_verifier::honk_verifier::PfAggRootVerifier",
+    "pf_agg_top_verifier::honk_verifier::PfAggTopVerifier",
 ]
 
 [target-defaults.test]
 build-external-contracts = [
     "garaga::universal_ecip::UniversalECIP",
     "pf_batch_k10_verifier::honk_verifier::PfBatchK10Verifier",
-    "pf_agg_root_k10_b2_verifier::honk_verifier::PfAggRootVerifier",
+    "pf_agg_top_verifier::honk_verifier::PfAggTopVerifier",
 ]

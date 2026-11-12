@@ -1,8 +1,9 @@
-// agg_leaf_k1 - aggregation LEAF over 1 invoice(s). Statement and method: ../pf_efi/src/agg.nr.
+// agg_leaf_k1: aggregation LEAF over 1 invoice. Statement and method: ../pf_efi/src/agg.nr.
 //
-// Public inputs : context, year, gamma
-// Public outputs: (taxpayer key hash, authority key hash, blinded summary commitment)
-// Proved with `bb prove -t noir-recursive` so that a root circuit can verify it.
+// Public inputs : context, year, gamma, leaf_vk_hash, node_vk_hash
+// Public outputs: (taxpayer key hash, authority key hash, blinded run commitment)
+// The two key hashes are carried, not constrained (see ../pf_agg/src/lib.nr).
+// Proved with `bb prove -t noir-recursive` so that another circuit can verify it.
 
 use pf_efi::agg::prove_leaf;
 
@@ -27,7 +28,11 @@ fn main(
     context: pub Field,
     year: pub u32,
     gamma: pub Field,
+    leaf_vk_hash: pub Field,
+    node_vk_hash: pub Field,
 ) -> pub (Field, Field, Field) {
+    let _ = leaf_vk_hash;
+    let _ = node_vk_hash;
     prove_leaf(
         request_docs,
         request_lens,

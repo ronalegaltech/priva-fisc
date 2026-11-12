@@ -5,7 +5,7 @@
 #   . tools/toolchain.env && sh tools/starknet/devnet_demo.sh
 #
 # Steps: start a fresh local network -> declare the ECIP helper, both verifiers and the registry ->
-# deploy the registry -> for a 10-invoice batch proof and then a 20-invoice aggregate proof: list
+# deploy the registry -> for a 10-invoice batch proof and then a 30-invoice aggregate proof: list
 # the authority key, submit the proof, read back what was recorded, submit it again (must be
 # refused). The invoices are invented and signed by throw-away keys.
 set -eu
@@ -42,14 +42,17 @@ cd "$ROOT/starknet/pf_registry"
 declare_class() { $SN declare --url "$URL" --contract-name "$1" 2>&1 | sed -n 's/^Class Hash: *//p'; }
 echo "1/5 declaring contracts on the local network ..."
 ECIP="$(declare_class UniversalECIP)"; BATCH_V="$(declare_class PfBatchK10Verifier)"
-AGG_V="$(declare_class PfAggRootVerifier)"; REGISTRY="$(declare_class PrivaFiscRegistry)"
+AGG_V="$(declare_class PfAggTopVerifier)"; REGISTRY="$(declare_class PrivaFiscRegistry)"
 [ -n "$ECIP" ] && [ -n "$BATCH_V" ] && [ -n "$AGG_V" ] && [ -n "$REGISTRY" ] || { echo "declare failed"; exit 1; }
 
-echo "2/5 deploying the registry (it is told which leaf circuit aggregate proofs must come from) ..."
-bb write_vk -b "$ROOT/noir/agg_leaf_k10/target/agg_leaf_k10.json" -o "$WORK/leaf_vk" -t noir-recursive >/dev/null 2>&1
-LEAF="$(u256_of_file "$WORK/leaf_vk/vk_hash")"
+echo "2/5 deploying the registry (it is told which circuits aggregate proofs must come from) ..."
+CIRCUITS=""
+for c in agg_leaf_k10 agg_node agg_sorted_s256; do
+    bb write_vk -b "$ROOT/noir/$c/target/$c.json" -o "$WORK/vk_$c" -t noir-recursive >/dev/null 2>&1
+    CIRCUITS="$CIRCUITS $(u256_of_file "$WORK/vk_$c/vk_hash")"
+done
 # shellcheck disable=SC2086
-CONTRACT="$($SN deploy --url "$URL" --class-hash "$REGISTRY" --constructor-calldata "$ADDR" "$BATCH_V" "$AGG_V" $LEAF 2>&1 | sed -n 's/^Contract Address: *//p')"
+CONTRACT="$($SN deploy --url "$URL" --class-hash "$REGISTRY" --constructor-calldata "$ADDR" "$BATCH_V" "$AGG_V" $CIRCUITS 2>&1 | sed -n 's/^Contract Address: *//p')"
 [ -n "$CONTRACT" ] || { echo "deploy failed"; exit 1; }
 
 # present KIND(function) CIRCUIT_JSON PROOF_DIR LABEL
@@ -76,11 +79,11 @@ echo "3/5 batch of 10 invented invoices: prove, list the authority key, submit .
 python3 "$ROOT/tools/pf.py" prove --synthetic 10 --out "$WORK/batch" >/dev/null
 present attest_batch "$ROOT/noir/batch_k10/target/batch_k10.json" "$WORK/batch" batch
 
-echo "4/5 aggregate of 20 invented invoices: prove two leaves and a root, list the key, submit ..."
-python3 "$ROOT/tools/efi/agg.py" prove --k 10 --synthetic --out "$WORK/agg" >/dev/null
-present attest_aggregate "$ROOT/noir/agg_root_k10_b2/target/agg_root_k10_b2.json" "$WORK/agg" aggregate
+echo "4/5 aggregate of 30 invented invoices: prove three leaves, join them, list the key, submit ..."
+python3 "$ROOT/tools/efi/agg.py" prove --k 10 --n 30 --synthetic --out "$WORK/agg" >/dev/null
+present attest_aggregate "$ROOT/noir/agg_top/target/agg_top.json" "$WORK/agg" aggregate
 
 echo "5/5 what the registry recorded:"
 COUNT="$($SN call --url "$URL" --contract-address "$CONTRACT" --function attestation_count 2>&1 | sed -n 's/^Response: *//p')"
 echo "    attestations: $COUNT"
-[ "$COUNT" = "2_u64" ] && echo "done: two attestations recorded (10 and 20 invoices), both replays refused" || { echo "unexpected attestation count"; exit 1; }
+[ "$COUNT" = "2_u64" ] && echo "done: two attestations recorded (10 and 30 invoices), both replays refused" || { echo "unexpected attestation count"; exit 1; }

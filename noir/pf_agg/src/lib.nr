@@ -1,112 +1,134 @@
-// pf_agg - the ROOT over B leaf proofs (see ../pf_efi/src/agg.nr for the leaf and the method).
+// pf_agg: the proofs above the leaves (see ../pf_efi/src/agg.nr for the method).
 //
-// Proved by the root, for N = B*K invoices of one taxpayer key and one authority key:
-//   * each of the B leaf proofs verifies under the leaf circuit whose key hash is the public
-//     `leaf_vk_hash`, with the same context, year, challenge and key hashes;
-//   * leaf b+1 starts at the ordinal right after leaf b ends; same unit and device in all leaves;
-//   * no receipt is used twice anywhere in the N invoices;
-//   * the grand total (negative totals subtract) >= public `threshold_cents`.
-// Published: taxpayer key hash, authority key hash, whether the run starts at ordinal 1, a root of
-// the leaves' nullifier chains, a root of their opening-commitment chains, and one scope nullifier.
+// Every proof about a run of invoices, leaf or node, has the same public layout:
+//     [context, year, gamma, leaf_vk_hash, node_vk_hash, taxpayer key hash, authority key hash,
+//      run commitment]
+// so a node can take either kind as a child. `leaf_vk_hash` and `node_vk_hash` are the key hashes
+// of the leaf circuit and of the node circuit itself. A node verifies each child under one of the
+// two, and requires the child to carry the same two values, so they are the same all the way up.
+// The verifier of the final proof MUST compare them (and `sorted_vk_hash`) with the key hashes of
+// the circuits it trusts: a proof only says "proofs of the circuits with THESE key hashes verified".
 //
-// A verifier MUST compare `leaf_vk_hash` with the key hash of the leaf circuit it trusts: the root
-// only says "proofs of the circuit with THIS key hash verified".
-// What is not proved is the same as for a single batch (see ../pf_efi/src/batch.nr).
-//
-// Note for testing: the inner proofs are checked when the root is PROVED, not when its witness is
-// generated. A root test that only executes the circuit proves nothing about the leaves.
+// Note for testing: inner proofs are checked when the outer circuit is PROVED, not when its witness
+// is generated. A test that only executes a node or the top shows nothing about what is inside.
 
 use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
-use pf_efi::agg::{LeafSummary, gamma_from, leaf_commitment, scope_nullifier};
-use poseidon::poseidon2::Poseidon2;
+use pf_efi::agg::{
+    Run, gamma_from, join_runs, pair_hash, run_commitment, run_from_fields, scope_nullifier,
+    sorted_commitment,
+};
 
-pub fn prove_root<let B: u32, let N: u32>(
-    leaf_vk: UltraHonkVerificationKey,
-    leaf_proofs: [UltraHonkZKProof; B],
-    summaries: [[Field; 10]; B],
-    blinds: [Field; B],
-    sorted_fics: [Field; N],
+/// Verifies one proof about a run (a leaf proof or a node proof) and returns the run.
+fn verify_run_proof(
+    vk: UltraHonkVerificationKey,
+    proof: UltraHonkZKProof,
+    is_leaf: bool,
+    fields: [Field; 11],
+    blind: Field,
+    context: Field,
+    year: u32,
+    gamma: Field,
+    leaf_vk_hash: Field,
+    node_vk_hash: Field,
+    taxpayer_key_hash: Field,
+    issuer_key_hash: Field,
+) -> Run {
+    let run = run_from_fields(fields);
+    let key_hash = if is_leaf { leaf_vk_hash } else { node_vk_hash };
+    verify_honk_proof(
+        vk,
+        proof,
+        [
+            context, year as Field, gamma, leaf_vk_hash, node_vk_hash, taxpayer_key_hash,
+            issuer_key_hash, run_commitment(run, blind),
+        ],
+        key_hash,
+    );
+    run
+}
+
+/// NODE: two adjacent runs become one. Returns (taxpayer key hash, authority key hash, commitment
+/// of the joined run).
+pub fn prove_node(
+    vks: [UltraHonkVerificationKey; 2],
+    proofs: [UltraHonkZKProof; 2],
+    is_leaf: [bool; 2],
+    runs: [[Field; 11]; 2],
+    blinds: [Field; 2],
+    blind_out: Field,
+    taxpayer_key_hash: Field,
+    issuer_key_hash: Field,
+    context: Field,
+    year: u32,
+    gamma: Field,
+    leaf_vk_hash: Field,
+    node_vk_hash: Field,
+) -> (Field, Field, Field) {
+    let left = verify_run_proof(
+        vks[0], proofs[0], is_leaf[0], runs[0], blinds[0], context, year, gamma, leaf_vk_hash,
+        node_vk_hash, taxpayer_key_hash, issuer_key_hash,
+    );
+    let right = verify_run_proof(
+        vks[1], proofs[1], is_leaf[1], runs[1], blinds[1], context, year, gamma, leaf_vk_hash,
+        node_vk_hash, taxpayer_key_hash, issuer_key_hash,
+    );
+    (taxpayer_key_hash, issuer_key_hash, run_commitment(join_runs(left, right), blind_out))
+}
+
+/// TOP: the proof of the whole run and the proof about the sorted receipt codes together give the
+/// statement. Returns (taxpayer key hash, authority key hash, starts at ordinal 1, number of
+/// invoices, nullifier-chain root, opening-chain root, scope nullifier).
+pub fn prove_top(
+    run_vk: UltraHonkVerificationKey,
+    run_proof: UltraHonkZKProof,
+    run_is_leaf: bool,
+    run_fields: [Field; 11],
+    run_blind: Field,
+    sorted_vk: UltraHonkVerificationKey,
+    sorted_proof: UltraHonkZKProof,
+    sorted_prod: Field,
+    sorted_chain: Field,
+    sorted_blind: Field,
     taxpayer_key_hash: Field,
     issuer_key_hash: Field,
     threshold_cents: u64,
     context: Field,
     year: u32,
     leaf_vk_hash: Field,
-) -> (Field, Field, bool, Field, Field, Field) {
-    // 1. The sorted list: 128-bit values, strictly increasing, hence without repeats.
-    let mut sorted_prod_inputs_ok = true;
-    for j in 0..N {
-        sorted_fics[j].assert_max_bit_size::<128>();
-        if j > 0 {
-            sorted_prod_inputs_ok &= (sorted_fics[j - 1] as u128) < (sorted_fics[j] as u128);
-        }
-    }
-    assert(sorted_prod_inputs_ok, "root: a receipt is used twice (sorted list is not strictly increasing)");
+    node_vk_hash: Field,
+    sorted_vk_hash: Field,
+) -> (Field, Field, bool, u32, Field, Field, Field) {
+    // The challenge is fixed by commitments to both lists.
+    let gamma = gamma_from(run_fields[8], sorted_chain);
 
-    // 2. The challenge is fixed by commitments to both lists.
-    let mut fic_chains: [Field; B] = [0; B];
-    for b in 0..B {
-        fic_chains[b] = summaries[b][7];
-    }
-    let gamma = gamma_from(fic_chains, Poseidon2::hash(sorted_fics, N));
+    let run = verify_run_proof(
+        run_vk, run_proof, run_is_leaf, run_fields, run_blind, context, year, gamma, leaf_vk_hash,
+        node_vk_hash, taxpayer_key_hash, issuer_key_hash,
+    );
+    // The sorted list holds exactly as many codes as there are invoices.
+    verify_honk_proof(
+        sorted_vk,
+        sorted_proof,
+        [gamma, sorted_commitment(run.count, sorted_prod, sorted_chain, sorted_blind)],
+        sorted_vk_hash,
+    );
+    assert(run.fic_prod == sorted_prod, "top: sorted list does not match the receipts in the leaves");
 
-    // 3. Each leaf: its proof verifies for exactly this summary; continuity across leaves.
-    let mut leaf_prod: Field = 1;
-    let mut sum_plus: u128 = 0;
-    let mut sum_minus: u128 = 0;
-    let mut null_chains: [Field; B] = [0; B];
-    let mut open_chains: [Field; B] = [0; B];
-    for b in 0..B {
-        let s = LeafSummary {
-            first_ordinal: summaries[b][0],
-            last_ordinal: summaries[b][1],
-            unit: summaries[b][2],
-            device: summaries[b][3],
-            sum_plus: summaries[b][4],
-            sum_minus: summaries[b][5],
-            fic_prod: summaries[b][6],
-            fic_chain: summaries[b][7],
-            null_chain: summaries[b][8],
-            open_chain: summaries[b][9],
-        };
-        let commitment = leaf_commitment(s, blinds[b]);
-        verify_honk_proof(
-            leaf_vk,
-            leaf_proofs[b],
-            [context, year as Field, gamma, taxpayer_key_hash, issuer_key_hash, commitment],
-            leaf_vk_hash,
-        );
-
-        if b > 0 {
-            assert(s.first_ordinal == summaries[b - 1][1] + 1, "root: ordinals are not consecutive across leaves");
-            assert(s.unit == summaries[0][2], "root: mixed business units");
-            assert(s.device == summaries[0][3], "root: mixed devices");
-        }
-        s.sum_plus.assert_max_bit_size::<64>();
-        s.sum_minus.assert_max_bit_size::<64>();
-        sum_plus += s.sum_plus as u128;
-        sum_minus += s.sum_minus as u128;
-        leaf_prod *= s.fic_prod;
-        null_chains[b] = s.null_chain;
-        open_chains[b] = s.open_chain;
-    }
-
-    // 4. Same multiset of receipt codes on both sides.
-    let mut sorted_prod: Field = 1;
-    for j in 0..N {
-        sorted_prod *= gamma - sorted_fics[j];
-    }
-    assert(leaf_prod == sorted_prod, "root: sorted list does not match the receipts in the leaves");
-
-    // 5. Threshold on the grand total.
-    assert(sum_plus >= sum_minus + (threshold_cents as u128), "root: total is below the threshold");
+    run.count.assert_max_bit_size::<32>();
+    run.sum_plus.assert_max_bit_size::<96>();
+    run.sum_minus.assert_max_bit_size::<96>();
+    assert(
+        (run.sum_plus as u128) >= (run.sum_minus as u128) + (threshold_cents as u128),
+        "top: total is below the threshold",
+    );
 
     (
         taxpayer_key_hash,
         issuer_key_hash,
-        summaries[0][0] == 1,
-        Poseidon2::hash(null_chains, B),
-        Poseidon2::hash(open_chains, B),
-        scope_nullifier(context, taxpayer_key_hash, summaries[0][2], summaries[0][3], year as Field),
+        run.first_ordinal == 1,
+        run.count as u32,
+        run.null_chain,
+        run.open_chain,
+        scope_nullifier(context, taxpayer_key_hash, run.unit, run.device, year as Field),
     )
 }

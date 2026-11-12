@@ -11,6 +11,9 @@
 //     An attribute is recognised only where ` Name="` begins outside any quoted value while the tag
 //     is open. Canonical XML never leaves a raw '"' inside a value, so text placed in a value cannot
 //     imitate an attribute. Each wanted attribute must occur exactly once.
+//   * A single quote is refused at tag level. Canonical XML delimits values with double quotes
+//     only; refusing "'" outside a value keeps this scan and any XML parser reading the same bytes
+//     in step, so a document cannot be built that the two would read differently.
 //   * The rest of the document (items, taxes, parties) is hashed and otherwise ignored.
 //
 // Known liveness limits: header without SubseqDelivType; SendDateTime/IssueDateTime with a numeric
@@ -114,6 +117,7 @@ fn scan_invoice_tag<let M: u32>(doc: [u8; M]) -> ([u32; 7], u32) {
     let mut count: [Field; 7] = [0; 7];
     let mut value_at: [Field; 7] = [0; 7];
     let mut tag_end: Field = 0;
+    let mut stray_single_quotes: Field = 0;
 
     for k in 0..TAG_WINDOW {
         let i = TAG_START + k;
@@ -128,6 +132,7 @@ fn scan_invoice_tag<let M: u32>(doc: [u8; M]) -> ([u32; 7], u32) {
         }
 
         let is_quote = (doc[i] == 34) as Field;
+        stray_single_quotes += ((doc[i] == 39) as Field) * outside;
         let closes = ((doc[i] == 62) as Field) * outside;
         tag_end += closes * (i as Field);
         in_tag -= closes;
@@ -135,6 +140,7 @@ fn scan_invoice_tag<let M: u32>(doc: [u8; M]) -> ([u32; 7], u32) {
     }
 
     assert(in_tag == 0, "request: <Invoice> start tag does not close inside the scan window");
+    assert(stray_single_quotes == 0, "request: single quote at tag level");
     let mut offsets: [u32; 7] = [0; 7];
     for a in 0..N_ATTR {
         assert(count[a] == 1, "request: a required attribute is missing or repeated");
@@ -321,6 +327,24 @@ fn test_rejects_long_iic() {
         " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff00\"",
         " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" TCRCode=\"ef789gh012\" TotPrice=\"1.00\"></Invoice></RegisterInvoiceRequest>",
     ));
+}
+
+#[test(should_fail_with = "request: single quote at tag level")]
+fn test_rejects_single_quoted_value() {
+    // A value delimited by single quotes. An XML parser accepts it; canonical XML never writes it.
+    let _ = extract_request_fields(doc_with(
+        " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\"",
+        " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" Note='x y' TCRCode=\"ef789gh012\" TotPrice=\"1.00\"></Invoice></RegisterInvoiceRequest>",
+    ));
+}
+
+#[test]
+fn test_single_quote_inside_a_value_is_fine() {
+    let f = extract_request_fields(doc_with(
+        " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\"",
+        " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" Note=\"it's fine\" TCRCode=\"ef789gh012\" TotPrice=\"1.00\"></Invoice></RegisterInvoiceRequest>",
+    ));
+    assert(f.total_cents == 100);
 }
 
 #[test(should_fail_with = "request: header template mismatch")]

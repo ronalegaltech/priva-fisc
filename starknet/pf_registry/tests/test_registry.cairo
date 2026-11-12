@@ -1,5 +1,5 @@
-//! Registry tests against real proofs (synthetic invoices): a 10-invoice batch proof and a
-//! 20-invoice aggregate proof. Regenerate the fixtures with tools/starknet/refresh_fixture.sh after
+//! Registry tests against real proofs (synthetic invoices): a 10-invoice batch proof and an
+//! aggregate proof of 20 invoices (two leaves of 10). Regenerate the fixtures with tools/starknet/refresh_fixture.sh after
 //! any circuit change.
 
 use pf_batch_k10_verifier::honk_verifier::{
@@ -42,17 +42,26 @@ struct Setup {
     aggregate_values: Span<u256>,
 }
 
-/// Deploys the registry. `leaf_vk_hash` None means "the leaf circuit named by the aggregate fixture".
-fn setup_with(leaf_vk_hash: Option<u256>) -> Setup {
+/// Which of the three circuit key hashes the registry is deployed with a wrong value for.
+#[derive(Copy, Drop, PartialEq)]
+enum Wrong {
+    Nothing,
+    Leaf,
+    Node,
+    Sorted,
+}
+
+/// Deploys the registry with the circuit key hashes named by the aggregate fixture, except the one
+/// selected by `wrong`.
+fn setup_with(wrong: Wrong) -> Setup {
     declare("UniversalECIP").unwrap();
     let batch_class = *declare("PfBatchK10Verifier").unwrap().contract_class().class_hash;
-    let aggregate_class = *declare("PfAggRootVerifier").unwrap().contract_class().class_hash;
+    let aggregate_class = *declare("PfAggTopVerifier").unwrap().contract_class().class_hash;
     let batch_values = values_of(batch_class, batch_proof());
     let aggregate_values = values_of(aggregate_class, aggregate_proof());
-    let leaf = match leaf_vk_hash {
-        Option::Some(h) => h,
-        Option::None => *aggregate_values.at(3),
-    };
+    let leaf: u256 = if wrong == Wrong::Leaf { 1 } else { *aggregate_values.at(3) };
+    let node: u256 = if wrong == Wrong::Node { 1 } else { *aggregate_values.at(4) };
+    let sorted: u256 = if wrong == Wrong::Sorted { 1 } else { *aggregate_values.at(5) };
 
     let registry_class = declare("PrivaFiscRegistry").unwrap().contract_class();
     let mut ctor: Array<felt252> = array![];
@@ -60,12 +69,14 @@ fn setup_with(leaf_vk_hash: Option<u256>) -> Setup {
     batch_class.serialize(ref ctor);
     aggregate_class.serialize(ref ctor);
     leaf.serialize(ref ctor);
+    node.serialize(ref ctor);
+    sorted.serialize(ref ctor);
     let (address, _) = registry_class.deploy(@ctor).unwrap();
     Setup { registry: IPrivaFiscRegistryDispatcher { contract_address: address }, batch_values, aggregate_values }
 }
 
 fn setup() -> Setup {
-    setup_with(Option::None)
+    setup_with(Wrong::Nothing)
 }
 
 fn list_issuer_key(registry: IPrivaFiscRegistryDispatcher, key_hash: u256) {
@@ -164,17 +175,17 @@ fn test_altered_batch_proof_is_refused() {
 #[should_panic]
 fn test_aggregate_proof_is_not_a_batch_proof() {
     let s = setup();
-    list_issuer_key(s.registry, *s.aggregate_values.at(5));
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
     s.registry.attest_batch(aggregate_proof());
 }
 
-// --- aggregate of 20 ---
+// --- aggregate ---
 
 #[test]
 fn test_aggregate_records_what_was_proved() {
     let s = setup();
-    assert(s.aggregate_values.len() == 10, 'fixture: 10 public values');
-    list_issuer_key(s.registry, *s.aggregate_values.at(5));
+    assert(s.aggregate_values.len() == 13, 'fixture: 13 public values');
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
 
     start_cheat_caller_address(s.registry.contract_address, submitter());
     let id = s.registry.attest_aggregate(aggregate_proof());
@@ -184,17 +195,17 @@ fn test_aggregate_records_what_was_proved() {
     assert(a.invoice_count == 20, 'invoice count');
     assert(a.aggregated, 'aggregated');
     assert(a.year == 2026, 'year');
-    assert(a.taxpayer_key_hash == *s.aggregate_values.at(4), 'taxpayer key');
-    assert(a.issuer_key_hash == *s.aggregate_values.at(5), 'issuer key');
+    assert(a.taxpayer_key_hash == *s.aggregate_values.at(6), 'taxpayer key');
+    assert(a.issuer_key_hash == *s.aggregate_values.at(7), 'issuer key');
     assert(a.starts_at_one, 'starts at one');
-    assert(s.registry.is_nullifier_used(*s.aggregate_values.at(9)), 'scope nullifier recorded');
+    assert(s.registry.is_nullifier_used(*s.aggregate_values.at(12)), 'scope nullifier recorded');
 }
 
 #[test]
 #[should_panic(expected: 'invoice already presented')]
 fn test_aggregate_cannot_be_presented_twice() {
     let s = setup();
-    list_issuer_key(s.registry, *s.aggregate_values.at(5));
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
     s.registry.attest_aggregate(aggregate_proof());
     s.registry.attest_aggregate(aggregate_proof());
 }
@@ -202,8 +213,24 @@ fn test_aggregate_cannot_be_presented_twice() {
 #[test]
 #[should_panic(expected: 'unknown leaf circuit')]
 fn test_aggregate_from_another_leaf_circuit_is_refused() {
-    let s = setup_with(Option::Some(1));
-    list_issuer_key(s.registry, *s.aggregate_values.at(5));
+    let s = setup_with(Wrong::Leaf);
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
+    s.registry.attest_aggregate(aggregate_proof());
+}
+
+#[test]
+#[should_panic(expected: 'unknown node circuit')]
+fn test_aggregate_from_another_node_circuit_is_refused() {
+    let s = setup_with(Wrong::Node);
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
+    s.registry.attest_aggregate(aggregate_proof());
+}
+
+#[test]
+#[should_panic(expected: 'unknown sorted circuit')]
+fn test_aggregate_from_another_sorted_circuit_is_refused() {
+    let s = setup_with(Wrong::Sorted);
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
     s.registry.attest_aggregate(aggregate_proof());
 }
 

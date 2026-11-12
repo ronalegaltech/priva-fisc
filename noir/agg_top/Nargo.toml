@@ -1,5 +1,5 @@
 [package]
-name = "agg_root_k10_b2"
+name = "agg_top"
 type = "bin"
 authors = [""]
 compiler_version = ">=1.0.0"

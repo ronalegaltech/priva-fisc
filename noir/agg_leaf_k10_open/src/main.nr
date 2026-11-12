@@ -1,9 +1,9 @@
-// agg_leaf_k10_open - the leaf's summary IN THE CLEAR, for the prover's own use.
+// agg_leaf_k10_open: the leaf's run IN THE CLEAR, for the prover's own use.
 //
 // Executed only (`nargo execute`), never proved and never shared: its output is the private input
-// the root needs for this leaf. Same checks as agg_leaf_k10.
+// the next proof up needs for this leaf. Same checks as agg_leaf_k10.
 
-use pf_efi::agg::leaf_summary_in_clear;
+use pf_efi::agg::leaf_run_in_clear;
 
 global K: u32 = 10;
 global M: u32 = 2048;
@@ -25,8 +25,8 @@ fn main(
     context: Field,
     year: u32,
     gamma: Field,
-) -> pub [Field; 10] {
-    leaf_summary_in_clear(
+) -> pub [Field; 11] {
+    leaf_run_in_clear(
         request_docs,
         request_lens,
         request_sigs,

@@ -1,5 +1,5 @@
 [package]
-name = "agg_gamma_k1_b2"
+name = "agg_sorted_s256"
 type = "bin"
 authors = [""]
 compiler_version = ">=1.0.0"

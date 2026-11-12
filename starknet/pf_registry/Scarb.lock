@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pf_agg_root_k10_b2_verifier"
+name = "pf_agg_top_verifier"
 version = "0.1.0"
 dependencies = [
  "garaga",
@@ -33,7 +33,7 @@ name = "pf_registry"
 version = "0.1.0"
 dependencies = [
  "garaga",
- "pf_agg_root_k10_b2_verifier",
+ "pf_agg_top_verifier",
  "pf_batch_k10_verifier",
  "snforge_std",
 ]

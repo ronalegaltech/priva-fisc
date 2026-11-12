@@ -5,7 +5,7 @@ use super::honk_verifier_circuits::{
     run_GRUMPKIN_ZK_HONK_EVALS_CONS_DONE_SIZE_21_circuit,
     run_GRUMPKIN_ZK_HONK_EVALS_CONS_INIT_SIZE_21_circuit,
     run_GRUMPKIN_ZK_HONK_EVALS_CONS_LOOP_SIZE_21_circuit,
-    run_GRUMPKIN_ZK_HONK_SUMCHECK_SIZE_21_PUB_18_circuit,
+    run_GRUMPKIN_ZK_HONK_SUMCHECK_SIZE_21_PUB_21_circuit,
 };
 use super::honk_verifier_constants::{precomputed_lines, vk};
 
@@ -17,7 +17,7 @@ pub trait IUltraKeccakZKHonkVerifier<TContractState> {
 }
 
 #[starknet::contract]
-mod PfAggRootVerifier {
+mod PfAggTopVerifier {
     use core::num::traits::Zero;
     use garaga::apps::noir::zk_honk_transcript::{
         KeccakHasherState, Point256IntoCircuitPoint, ZKHonkTranscriptTrait,
@@ -39,7 +39,7 @@ mod PfAggRootVerifier {
         run_GRUMPKIN_ZK_HONK_EVALS_CONS_DONE_SIZE_21_circuit,
         run_GRUMPKIN_ZK_HONK_EVALS_CONS_INIT_SIZE_21_circuit,
         run_GRUMPKIN_ZK_HONK_EVALS_CONS_LOOP_SIZE_21_circuit,
-        run_GRUMPKIN_ZK_HONK_SUMCHECK_SIZE_21_PUB_18_circuit, vk,
+        run_GRUMPKIN_ZK_HONK_SUMCHECK_SIZE_21_PUB_21_circuit, vk,
     };
 
     #[storage]
@@ -86,7 +86,7 @@ mod PfAggRootVerifier {
                 KeccakHasherState,
             >(full_proof.proof, vk.vk_hash, vk.log_circuit_size);
             let log_n = vk.log_circuit_size;
-            let (sum_check_rlc, honk_check) = run_GRUMPKIN_ZK_HONK_SUMCHECK_SIZE_21_PUB_18_circuit(
+            let (sum_check_rlc, honk_check) = run_GRUMPKIN_ZK_HONK_SUMCHECK_SIZE_21_PUB_21_circuit(
                 p_public_inputs: full_proof.proof.public_inputs,
                 p_pairing_point_object: full_proof.proof.pairing_point_object,
                 libra_sum: u256_to_u384(full_proof.proof.libra_sum),
