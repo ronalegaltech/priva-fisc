@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
 import batch_inputs  # noqa: E402
+import poseidon2  # noqa: E402
 
 # BN254 scalar field, the field the circuits compute in.
 P = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -118,8 +119,7 @@ def hexlist(values):
 
 
 def hash3(a, b, c):
-    _, out = execute("agg_hash3", f'a = "{hex(a)}"\nb = "{hex(b)}"\nc = "{hex(c)}"\n', want_output=True)
-    return out[0]
+    return poseidon2.hash([a, b, c])
 
 
 def pair_hash(left, right):
@@ -128,7 +128,7 @@ def pair_hash(left, right):
 
 def slot_hash(values):
     """Poseidon2 over the slots of one leaf, as the leaf circuit hashes them."""
-    return execute(f"agg_chain_k{len(values)}", f"values = {hexlist(values)}\n", want_output=True)[1][0]
+    return poseidon2.hash(values)
 
 
 def fic_int(invoice):

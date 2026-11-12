@@ -32,7 +32,12 @@ import tempfile
 import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import poseidon2  # noqa: E402
+
 OPEN_PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "open_invoice"))
+DOMAIN_OPENING = int.from_bytes(b"PF-OPENING", "big")
+ORDER = ("iic", "fic", "ordinal", "issue_local_ts", "issue_tz", "total_negative", "total_cents", "salt")
 
 
 def reveal(prover_path, index):
@@ -90,6 +95,13 @@ def field_values(o):
 
 
 def recompute(o):
+    """The opening commitment of these values, as the circuits compute it."""
+    values = field_values(o)
+    return poseidon2.hash([DOMAIN_OPENING] + [int(values[name], 0) for name in ORDER])
+
+
+def recompute_in_circuit(o):
+    """The same value from the open_invoice circuit (needs nargo). Used to cross-check `recompute`."""
     values = field_values(o)
     name = "ProverOpen" + next(tempfile._get_candidate_names())
     path = os.path.join(OPEN_PKG, name + ".toml")

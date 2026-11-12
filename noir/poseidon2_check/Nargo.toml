@@ -1,5 +1,5 @@
 [package]
-name = "agg_hash3"
+name = "poseidon2_check"
 type = "bin"
 authors = [""]
 compiler_version = ">=1.0.0"

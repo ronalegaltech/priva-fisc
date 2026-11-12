@@ -1,7 +1,7 @@
-// open_invoice - recompute one invoice's opening commitment from its revealed values.
+// open_invoice - one invoice's opening commitment from its revealed values, in circuit form.
 //
-// Used by a verifier during a spot check: execute (no proof needed) and compare the output with
-// the opening commitment published by the batch proof. See ../pf_efi/src/batch.nr.
+// Executed only (no proof). tools/efi/opening.py computes the same value in Python during a spot
+// check; tools/efi/test_poseidon2.py checks that the two agree. See ../pf_efi/src/batch.nr.
 
 use pf_efi::batch::opening_commitment;
 

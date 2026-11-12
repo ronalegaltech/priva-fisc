@@ -12,8 +12,8 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | `agg_node` | circuit | Joins two adjacent runs, each proved by a leaf or by another node. |
 | `agg_sorted_s4096` | circuit | Up to 4,096 receipt codes sorted strictly increasing. |
 | `agg_top` | circuit | Final proof of an aggregate. |
-| `agg_leaf_k*_open`, `agg_sorted_s4096_open`, `agg_chain_k*`, `agg_hash3` | helper | Executed to get private inputs, the challenge, and the hashes of a spot check. Never proved. |
-| `open_invoice` | helper | Recomputes one invoice's opening commitment during a spot check. |
+| `agg_leaf_k*_open`, `agg_sorted_s4096_open` | helper | Executed by the prover to get the private inputs of the next proof up. Never proved, never shared. |
+| `open_invoice`, `poseidon2_check` | helper | Circuit forms of the opening commitment and of the hash. Executed only by `tools/efi/test_poseidon2.py`, which checks the Python implementation the tools use against them. |
 | `rsa_key_hash` | helper | Key hash of an RSA modulus, as the circuits publish it. |
 | `leaf_request_v0`, `leaf_response_v0` | circuit | A request or a receipt on its own. Used for component tests and benchmarks. |
 
@@ -58,7 +58,9 @@ registry do.
 
 An aggregate publishes one root over the opening commitments of all its invoices instead of the
 commitments themselves. In a spot check the prover reveals an invoice together with the other
-commitments of its leaf and the sibling hashes up to that root (`tools/efi/opening.py`).
+commitments of its leaf and the sibling hashes up to that root (`tools/efi/opening.py`). The tools
+compute Poseidon2 in Python (`tools/efi/poseidon2.py`), so checking an opening needs no Noir
+toolchain.
 
 ## Tests
 
@@ -70,6 +72,7 @@ python3 ../tools/efi/test_leaf_request.py      # 9 cases
 python3 ../tools/efi/test_batch.py --k 1       # 8 cases
 python3 ../tools/efi/test_batch.py --k 10      # 12 cases
 python3 ../tools/efi/test_opening.py           # 4 cases
+python3 ../tools/efi/test_poseidon2.py         # 13 checks of the Python hash against circuits
 python3 ../tools/efi/test_agg.py               # 13 cases through proving, 4 spot checks
 python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 6 spot checks
 ```
