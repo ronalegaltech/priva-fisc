@@ -96,7 +96,7 @@ python3 ../tools/efi/test_leaf_request.py      # 14 cases
 python3 ../tools/efi/test_replay.py            # 6 checks on an invoice signed again
 python3 ../tools/efi/test_batch.py --k 1       # 8 cases
 python3 ../tools/efi/test_batch.py --k 10      # 12 cases
-python3 ../tools/efi/test_opening.py           # 4 cases
+python3 ../tools/efi/test_opening.py           # 9 cases
 python3 ../tools/efi/test_poseidon2.py         # 13 checks of the Python hash against circuits
 python3 ../tools/efi/test_agg.py               # 14 cases through proving, 17 spot checks
 python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 30 spot checks

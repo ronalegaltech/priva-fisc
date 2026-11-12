@@ -12,6 +12,7 @@ revealed values with what the tax authority's public invoice-check service retur
   draw                                                                         (verifier side)
   reveal --record RECORD.json (--index I | --point R) --out OPENING.json       (prover side)
   check  --opening OPENING.json --proof DIR (--ordinal N | --first | --last | --point R)   (verifier)
+  compare --opening OPENING.json --authority LOOKUP.json                       (verifier side)
 
 RECORD.json is the file written by `pf.py prove --keep`; it stays with the prover. I counts the
 invoices from 0 in the order they were proved.
@@ -28,9 +29,12 @@ invoice whose share of that sum contains the point. Invoices are then opened wit
 proportional to their amount: one invoice that carries most of a total is asked for most of the
 time, which asking by number would not do.
 
-What the verifier still has to do by hand with an opening that matched: look the invoice up at the
-tax authority by its IIC, compare receipt code, ordinal, time, total, business unit and device with
-the opening, and compare the seller in the authority's record with the taxpayer's certificate.
+An opening that matched is what the taxpayer proved, not yet what the authority has. The verifier
+looks the invoice up at the tax authority by its IIC and writes what the authority shows into a
+small file: {"iic", "fic", "ordinal", "issue_date_time", "total", "business_unit", "device"}.
+`compare` prints AGREES, or DIFFERENT followed by the names of the fields that differ (never their
+values). The verifier also compares the seller in the authority's record with the taxpayer's
+certificate. This tool does not query the authority.
 
 Lower-level forms, for a batch whose Prover file is at hand:
   reveal --prover BATCH_PROVER.toml --index I --out OPENING.json
@@ -257,6 +261,32 @@ def check_against_proof(o, proof_dir, ordinal=None, edge=None, point=None):
     return agg.verify_proof(f"spot_open_k{located['leaf_size']}", bytes.fromhex(located["proof"]), public)
 
 
+COMPARED = ("iic", "fic", "ordinal", "issue_date_time", "total", "business_unit", "device")
+
+
+def differences(o, lookup):
+    """Names of the fields in which an opening differs from what the authority has for that IIC."""
+    def normal(name, value):
+        if name in ("iic", "fic"):
+            return str(value).replace("-", "").lower()
+        if name == "ordinal":
+            return int(value)
+        if name == "total":
+            text = str(value)
+            return int(text.replace(".", "")) if "." in text else int(text) * 100
+        return str(value)
+
+    out = []
+    for name in COMPARED:
+        try:
+            same = normal(name, o[name]) == normal(name, lookup[name])
+        except (KeyError, ValueError):
+            same = False
+        if not same:
+            out.append(name)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -279,10 +309,18 @@ def main():
     asked.add_argument("--first", action="store_true")
     asked.add_argument("--last", action="store_true")
     asked.add_argument("--point", type=int)
+    m = sub.add_parser("compare")
+    m.add_argument("--opening", required=True)
+    m.add_argument("--authority", required=True, help="what the authority shows for this IIC, as JSON")
     a = ap.parse_args()
     if a.cmd == "draw":
         print(secrets.randbits(64))
         return 0
+    if a.cmd == "compare":
+        with open(a.opening) as f, open(a.authority) as g:
+            differing = differences(json.load(f), json.load(g))
+        print("DIFFERENT: " + ", ".join(differing) if differing else "AGREES")
+        return 1 if differing else 0
     if a.cmd == "check" and a.proof and a.ordinal is None and a.point is None and not (a.first or a.last):
         ap.error("with --proof, say which invoice was asked for: --ordinal N, --first, --last or --point R")
     if a.cmd == "reveal" and a.prover and a.index is None:

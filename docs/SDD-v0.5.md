@@ -65,7 +65,7 @@ Saldırgan kanıtı üreten mükelleftir. Doğrulayıcı (banka, faktoring şirk
 | verifier-onchain | Kanıtı Starknet'te doğrula | Garaga'nın ürettiği iki Cairo sözleşmesi: 10'luk kanıt için `pf_batch_k10_verifier`, birleştirilmiş kanıt için `pf_agg_top_verifier` | Starknet | Yerel Starknet ağında gerçek işlemle çalışıyor; Sepolia'ya yüklenmedi |
 | status-contract | Nullifier defteri, idare anahtar kaydı, kanıtlananın kaydı; iki kanıt türünü de kabul eder, bir bağlamda yalnız birini; birleştirilmiş kanıtta yaprak, birleştirici ve sıralı liste devrelerinin özetlerini kendi kaydıyla karşılaştırır, fatura sayısını kanıttan okur | Cairo (`starknet/pf_registry`) | Starknet | Testler 16/16; yerel Starknet ağında uçtan uca çalışıyor (`tools/starknet/devnet_demo.sh`); Sepolia'ya yüklenmedi |
 | anahtar kaydı | İdare sertifikasından anahtar özeti | `tools/efi/keyhash.py` + Noir `rsa_key_hash`; `registry/issuer_keys.json` | Herkes hesaplayabilir | Çalışıyor; kayıtta yalnız 2021 test sertifikası var |
-| örnek açtırma | Seçilen faturayı aç ve karşılaştır; birleştirilmiş kanıtta faturanın kökün altındaki yerini yolu göstermeden kanıtla; numarayla ya da tutar noktasıyla sor | `tools/efi/opening.py`, Noir `spot_open_k*` (`pf_efi/spot.nr`); özet hesabı Python'da (`tools/efi/poseidon2.py`, devrelerle karşılaştırmalı testi var) | Doğrulayıcı ile mükellef arasında | Açma ve taahhüt denetimi iki kanıt türünde de çalışıyor; idare servisiyle karşılaştırma adımı araca bağlanmadı |
+| örnek açtırma | Seçilen faturayı aç ve karşılaştır; birleştirilmiş kanıtta faturanın kökün altındaki yerini yolu göstermeden kanıtla; numarayla ya da tutar noktasıyla sor | `tools/efi/opening.py`, Noir `spot_open_k*` (`pf_efi/spot.nr`); özet hesabı Python'da (`tools/efi/poseidon2.py`, devrelerle karşılaştırmalı testi var) | Doğrulayıcı ile mükellef arasında | Açma, taahhüt denetimi ve idare kaydıyla alan alan karşılaştırma (`opening.py compare`) çalışıyor; idarenin servisine sorguyu araç yapmaz, doğrulayıcı gördüğünü küçük bir dosyaya yazar |
 
 Sabit sürümler: Noir 1.0.0, Barretenberg 6.0.0, Scarb/Cairo 2.21.0, Starknet Foundry 0.64.1, Garaga `d97b4d3` (bkz. `tools/toolchain.env`). Korpus mükellefin makinesinden çıkmaz; dışarı yalnız kanıt ve açık çıktılar gider.
 
@@ -168,20 +168,21 @@ Depoda yalnız sentetik veri vardır; gerçek örneklerle denemeler depo dışı
 | Yeniden imzalama | Aynı fatura dört ayrı biçimde imzalanır: IICSignature, cihaz ya da tutar değişse de nullifier aynı kalır; cihaz ya da tutar değişince açma taahhüdü değişir; başka bir yanıt başka nullifier verir | 6/6 |
 | 1 fatura | Kabul/ret: kopuk bağ, eşik altı, yanlış yıl, sahte imzalar, tutar değişikliği | 8/8 |
 | 10 fatura | Kabul/ret: boşluk, yanıtın iki kez kullanımı, karışık birim/cihaz ve yukarıdakiler | 12/12 |
-| Örnek açtırma | Doğru açma eşleşir; tutarı, sırayı ya da FIC'i değiştirilmiş açma eşleşmez | 4/4 |
+| Örnek açtırma | Doğru açma eşleşir; tutarı, sırayı ya da FIC'i değiştirilmiş açma eşleşmez. İdare kaydıyla karşılaştırma: aynı kayıt uyuşur, başka tutar, başka cihaz ve bulunamayan kayıt farkı alan adıyla gösterir | 9/9 |
 | Özet fonksiyonu | Araçların Python Poseidon2'si devrelerle karşılaştırılır: referans vektör, 0 ile 10 arası eleman sayıları, açma taahhüdü | 13/13 |
 | Birleştirme (1'lik yapraklar) | Kanıt üreterek: 1, 2 ve 3 yapraklı geçerli ağaçlar; yanıtın iki yaprakta kullanımı; bunu baştan sahte sıralı listeyle gizleme; yapraklar arası boşluk; başka cihaz; eşik altı; başka denetim değeriyle kanıtlanmış yaprak; sonradan değiştirilmiş özet; yanlış yaprak devresi özeti; yaprağın birleştirici diye sunulması; tek yuvalı yaprağın iki fatura taşıdığının söylenmesi; biri çok büyük dört fatura | 14/14 |
 | Birleştirme (10'luk yapraklar) | Kanıt üreterek: geçerli 20, 23 (10 + 10 + 3) ve 7 fatura; boş yuvanın fatura sayılması; sıfır ya da 11 fatura taşıdığı söylenen yaprak; yapraklar arasında dört faturanın atlanması; yanıtın iki yaprakta kullanımı ve sahte sıralı liste | 8/8 |
 | Birleştirilmiş kanıtta örnek açtırma | Dört geçerli kanıtta (3, 4, 23 ve 7 fatura), her açma `spot_open` kanıtıyla: istenen fatura açılır; tutarı ya da cihaz kodu değiştirilmiş, başka sıra numarası için sunulmuş ya da başka faturanın kanıtıyla sunulmuş açma reddedilir; ilk ve son fatura ilk ve son olarak kabul edilir, ortadaki ya da ters uçtaki kabul edilmez; çekilen tutar noktasını kapsayan fatura kabul edilir, aynı nokta için başka bir fatura reddedilir; biri çok büyük dört faturada yirmi çekilişin en az on beşi büyük faturayı ister | 47/47 |
 | Starknet defteri | Gerçek 10'luk ve 20'lik kanıtlarla: kayıt, ikinci sunum, kayıtsız ya da kaldırılmış idare anahtarı, yalnız sahip anahtar ekler, değiştirilmiş kanıt, birleştirilmiş kanıtın 10'luk girişten sunulması, tanınmayan yaprak, birleştirici ya da sıralı liste devresi; aynı bağlamda öteki tür kanıtın reddi (iki yönde) | 16/16 |
 | Yerel ağda uçtan uca | Sözleşmeleri yükle ve kur; 10'luk ve 25 faturalık kanıt için: idare anahtarını kaydet, kanıtı sun, aynı kanıtı yeniden sun (reddedilir). Tek komut, yaklaşık 4 dakika | geçti |
+| Gösterim (`tools/demo.py`) | 25 uydurma fatura, iki mükellef: dürüst olanın kanıtı kabul edilir, dört açmanın dördü idare kaydıyla uyuşur; bir faturayı 500.000 fazla gösteren mükellefin kanıtı da kabul edilir, ama tutarla yapılan çekilişler şişirilen faturayı ister ve karşılaştırma tutar farkını gösterir | geçti |
 | Uçtan uca araç | Gerçek 2021 çiftinde `prove` -> `verify`: geçerli, idare anahtarı kayıtlı ama üretim anahtarı değil uyarısı, sertifika eşleşiyor, başka bağlamla ret; sentetik 10'lukta geçerli ama "anahtar kayıtsız" uyarısı; değiştirilmiş açık değerde geçersiz; 3, 13, 25 ve 100 sentetik faturayla `prove --keep` -> `verify` -> son faturanın örnek açtırması | elle koşuldu |
 
 ## 9. Sıradaki adımlar
 
 1. Doğrulayıcıları ve defter sözleşmesini Starknet Sepolia'ya yüklemek ve gerçek ücreti ölçmek.
 2. Test ortamından kendi kestiğimiz 10 ardışık gerçek faturayla demo.
-3. Örnek açtırmada idarenin kamu servisiyle karşılaştırma adımı.
+3. Örnek açtırmada idarenin kamu servisine sorgunun araca bağlanması (karşılaştırmanın kendisi yapıldı; sorgu için idarenin servis biçimi gerçek veriyle görülmeli).
 4. Tutarı küçültülmüş düzeltme faturalarına karşı bir kural (tutarla sorma bunları yakalamaz, bkz. 4.4); 10'luk kanıtlarda tutarla sorma.
 5. Eksik alanlar ve biçimler (Bölüm 7).
 6. 4096'dan büyük kümeler (sıralı listenin de parçalanması) ve yaprakların birden çok makinede üretilmesi.

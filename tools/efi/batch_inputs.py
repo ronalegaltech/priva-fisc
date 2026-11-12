@@ -17,7 +17,7 @@ import sys
 import uuid
 
 from efi_common import modulus_of, new_key, redc_param, sign, signed_info, toml_limbs
-from leaf_request_inputs import build_request, core_fields, ingest_xml as ingest_request, signed_xml
+from leaf_request_inputs import EFI, build_request, core_fields, ingest_xml as ingest_request, money, signed_xml
 from leaf_response_inputs import build_doc as build_response_doc, ingest_xml as ingest_response, synthetic_soap
 
 M = 2048  # must match `global M` in noir/batch_k*/src/main.nr
@@ -71,9 +71,13 @@ TAMPERS = (
 )
 
 
-def synthetic(k, tamper, start, threshold, large=None):
+def synthetic(k, tamper, start, threshold, large=None, inflate=None):
     """k invented invoices. `large`: position of one invoice made far larger than the others
-    (500,000.00 before tax), for tests of amount-weighted spot checks."""
+    (500,000.00 before tax), for tests of amount-weighted spot checks. `inflate`: position of one
+    invoice that the taxpayer signs again showing 500,000.00 more than what was registered, keeping
+    the registered identifiers; the circuits cannot see this, a spot check has to.
+
+    Every invoice carries, under "authority", what the tax authority would have on record for it."""
     rng = random.Random(secrets.randbits(64))
     taxpayer, authority = new_key(), new_key()
     base = core_fields(rng)
@@ -94,14 +98,29 @@ def synthetic(k, tamper, start, threshold, large=None):
         total += c["total"]
 
         req_key = new_key() if (tamper == "forged-request" and n == k - 1) else taxpayer
-        doc, req_sig, _ = ingest_request(signed_xml(req_key, build_request(req_key, c, tricky=False)))
+        request = build_request(req_key, c, tricky=False)
+        registered = request.find(EFI + "Invoice")
+        record = {
+            "iic": registered.get("IIC"), "ordinal": c["ordinal"], "issue_date_time": c["issue"],
+            "total": money(c["total"]), "business_unit": c["bu"], "device": c["tcr"], "seller_tin": c["tin"],
+        }
+        if n == inflate:
+            shown = dict(c, net=c["net"] + 50_000_000)
+            shown["vat"] = shown["net"] * 21 // 100
+            shown["total"] = shown["net"] + shown["vat"]
+            total += shown["total"] - c["total"]
+            request = build_request(req_key, shown, tricky=False)
+            for name in ("IIC", "IICSignature"):
+                request.find(EFI + "Invoice").set(name, registered.get(name))
+        doc, req_sig, _ = ingest_request(signed_xml(req_key, request))
 
         resp_fields = (c["uuid"].encode(), (c["issue"]).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
         if tamper == "broken-link" and n == k - 1:
             resp_fields = (str(uuid.uuid4()).encode(),) + resp_fields[1:]
         resp_key = new_key() if (tamper == "forged-receipt" and n == k - 1) else authority
         fields, resp_sig, _ = ingest_response(synthetic_soap(resp_key, resp_fields))
-        invoices.append({"doc": doc, "req_sig": req_sig, "resp": fields, "resp_sig": resp_sig})
+        record["fic"] = fields[3].decode()
+        invoices.append({"doc": doc, "req_sig": req_sig, "resp": fields, "resp_sig": resp_sig, "authority": record})
 
     if tamper == "reused-receipt" and k > 1:
         # The taxpayer signs a second request under the UUID of invoice 0 and reuses receipt 0.
