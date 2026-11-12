@@ -1,0 +1,24 @@
+# build output
+target/
+.snfoundry_cache/
+__pycache__/
+
+# prover inputs and witnesses hold private data
+Prover*.toml
+*.gz
+
+# keys and certificates never belong here
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+.env
+.env.*
+
+# local
+.DS_Store
+.idea/
+.vscode/
