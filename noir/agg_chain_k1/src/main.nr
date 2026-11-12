@@ -1,8 +1,9 @@
-// agg_chain_k1: commitment to the receipt codes of one leaf of 1, as the leaf circuit computes it.
-// Executed only, by the prover, to derive the challenge before any leaf is proved.
+// agg_chain_k1: Poseidon2 over the 1 slot of one leaf (receipt codes, or opening commitments), as the
+// leaf circuit hashes them. Executed only: by the prover to derive the challenge before any leaf
+// is proved, and by both sides in a spot check.
 
 use poseidon::poseidon2::Poseidon2;
 
-fn main(fics: [Field; 1]) -> pub Field {
-    Poseidon2::hash(fics, 1)
+fn main(values: [Field; 1]) -> pub Field {
+    Poseidon2::hash(values, 1)
 }

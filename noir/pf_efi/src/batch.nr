@@ -22,6 +22,11 @@
 //     (IIC, FIC, ordinal, issue time, total, salt) and the verifier compares it with what the
 //     authority's public invoice-check service returns for that IIC. Unopened invoices stay hidden.
 //   * that no invoices exist after the last ordinal, or on other devices of the same taxpayer.
+//
+// A circuit with K slots can carry fewer than K invoices: `count` says how many slots, from the
+// first, are the statement. The remaining slots must still hold well-formed signed pairs (the
+// prover repeats one of its own), but nothing read from them reaches any result. The batch
+// circuits always use all K; the aggregation leaves (agg.nr) take `count` as an input.
 
 use crate::request::request_fields_and_digest;
 use crate::response::response_fields_and_digest;
@@ -49,8 +54,10 @@ pub fn opening_commitment(
     )
 }
 
-/// What K checked invoices amount to. Private: nothing here is published as is.
+/// What the first `count` of K checked invoices amount to. Private: nothing here is published as
+/// is. Entries of the three lists from `count` on are zero.
 pub struct BatchCore<let K: u32> {
+    pub count: u32,
     pub taxpayer_key_hash: Field,
     pub issuer_key_hash: Field,
     pub first_ordinal: u64,
@@ -64,9 +71,47 @@ pub struct BatchCore<let K: u32> {
     pub openings: [Field; K],
 }
 
-/// Checks K invoices one by one (both signatures, the UUID link, the year) and, across them, the
-/// same unit and device and consecutive ordinals. It does NOT check that receipts are distinct and
-/// does not apply any threshold: callers do that (see `prove_batch` here and agg.nr).
+/// Ordinal, place and amount of one invoice, as read from its signed request.
+pub struct Line {
+    pub ordinal: u64,
+    pub unit: Field,
+    pub device: Field,
+    pub negative: bool,
+    pub cents: u64,
+}
+
+/// Across the first `count` lines: same unit and device, consecutive ordinals, and the two sums.
+/// Lines from `count` on are ignored. Returns (first ordinal, last ordinal, unit, device, sum of
+/// the positive totals, sum of the negative totals).
+pub fn summarise<let K: u32>(lines: [Line; K], count: u32) -> (u64, u64, Field, Field, u64, u64) {
+    assert(count >= 1, "batch: no invoices");
+    assert(count <= K, "batch: more invoices than this circuit holds");
+    let first = lines[0];
+    let mut last_ordinal = first.ordinal;
+    let mut sum_plus: u64 = 0;
+    let mut sum_minus: u64 = 0;
+    for i in 0..K {
+        if i < count {
+            if i > 0 {
+                assert(lines[i].ordinal == last_ordinal + 1, "batch: ordinals are not consecutive");
+                assert(lines[i].unit == first.unit, "batch: mixed business units");
+                assert(lines[i].device == first.device, "batch: mixed devices");
+            }
+            last_ordinal = lines[i].ordinal;
+            if lines[i].negative {
+                sum_minus += lines[i].cents;
+            } else {
+                sum_plus += lines[i].cents;
+            }
+        }
+    }
+    (first.ordinal, last_ordinal, first.unit, first.device, sum_plus, sum_minus)
+}
+
+/// Checks K signed pairs one by one (both signatures, the UUID link, the year) and, across the
+/// first `count` of them, the same unit and device and consecutive ordinals. It does NOT check
+/// that receipts are distinct and does not apply any threshold: callers do that (see `prove_batch`
+/// here and agg.nr).
 pub fn check_invoices<let K: u32, let M: u32>(
     request_docs: [[u8; M]; K],
     request_lens: [u32; K],
@@ -81,6 +126,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
     issuer_modulus: [u128; 18],
     issuer_redc: [u128; 18],
     salts: [Field; K],
+    count: u32,
     context: Field,
     year: u32,
 ) -> BatchCore<K> {
@@ -90,12 +136,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
     let mut fics: [Field; K] = [0; K];
     let mut nullifiers: [Field; K] = [0; K];
     let mut openings: [Field; K] = [0; K];
-    let mut sum_plus: u64 = 0;
-    let mut sum_minus: u64 = 0;
-    let mut first_ordinal: u64 = 0;
-    let mut prev_ordinal: u64 = 0;
-    let mut unit: Field = 0;
-    let mut device: Field = 0;
+    let mut lines: [Line; K] = [Line { ordinal: 0, unit: 0, device: 0, negative: false, cents: 0 }; K];
 
     for i in 0..K {
         let (req, req_digest) = request_fields_and_digest(request_docs[i], request_lens[i]);
@@ -112,42 +153,38 @@ pub fn check_invoices<let K: u32, let M: u32>(
         assert(resp.request_uuid == req.uuid, "batch: receipt does not belong to this request");
         assert(req.issue_year == year, "batch: invoice is not from the stated year");
 
-        if i == 0 {
-            first_ordinal = req.ordinal;
-            unit = req.busin_unit_code;
-            device = req.tcr_code;
-        } else {
-            assert(req.ordinal == prev_ordinal + 1, "batch: ordinals are not consecutive");
-            assert(req.busin_unit_code == unit, "batch: mixed business units");
-            assert(req.tcr_code == device, "batch: mixed devices");
-        }
-        prev_ordinal = req.ordinal;
+        lines[i] = Line {
+            ordinal: req.ordinal,
+            unit: req.busin_unit_code,
+            device: req.tcr_code,
+            negative: req.total_negative,
+            cents: req.total_cents,
+        };
 
-        if req.total_negative {
-            sum_minus += req.total_cents;
-        } else {
-            sum_plus += req.total_cents;
+        if i < count {
+            fics[i] = resp.fic;
+            nullifiers[i] = Poseidon2::hash([DOMAIN_NULLIFIER, context, req.iic_signature_hash], 3);
+            openings[i] = opening_commitment(
+                req.iic,
+                resp.fic,
+                req.ordinal as Field,
+                req.issue_local_ts,
+                req.issue_tz,
+                req.total_negative as Field,
+                req.total_cents as Field,
+                salts[i],
+            );
         }
-
-        fics[i] = resp.fic;
-        nullifiers[i] = Poseidon2::hash([DOMAIN_NULLIFIER, context, req.iic_signature_hash], 3);
-        openings[i] = opening_commitment(
-            req.iic,
-            resp.fic,
-            req.ordinal as Field,
-            req.issue_local_ts,
-            req.issue_tz,
-            req.total_negative as Field,
-            req.total_cents as Field,
-            salts[i],
-        );
     }
 
+    let (first_ordinal, last_ordinal, unit, device, sum_plus, sum_minus) = summarise(lines, count);
+
     BatchCore {
+        count,
         taxpayer_key_hash,
         issuer_key_hash,
         first_ordinal,
-        last_ordinal: prev_ordinal,
+        last_ordinal,
         unit,
         device,
         sum_plus,
@@ -190,6 +227,7 @@ pub fn prove_batch<let K: u32, let M: u32>(
         issuer_modulus,
         issuer_redc,
         salts,
+        K,
         context,
         year,
     );
@@ -202,4 +240,56 @@ pub fn prove_batch<let K: u32, let M: u32>(
     assert(c.sum_plus >= c.sum_minus + threshold_cents, "batch: total is below the threshold");
 
     (c.taxpayer_key_hash, c.issuer_key_hash, c.first_ordinal == 1, c.nullifiers, c.openings)
+}
+
+#[test]
+fn test_summarise_ignores_slots_after_count() {
+    let l = |ordinal: u64, cents: u64, negative: bool| Line { ordinal, unit: 7, device: 8, negative, cents };
+    // Three invoices; the fourth slot repeats the third, as a prover fills an unused slot.
+    let lines = [l(5, 100, false), l(6, 40, true), l(7, 250, false), l(7, 250, false)];
+    let (first, last, unit, device, plus, minus) = summarise(lines, 3);
+    assert(first == 5);
+    assert(last == 7);
+    assert(unit == 7);
+    assert(device == 8);
+    assert(plus == 350);
+    assert(minus == 40);
+}
+
+#[test]
+fn test_summarise_ignores_another_place_after_count() {
+    let lines = [
+        Line { ordinal: 1, unit: 7, device: 8, negative: false, cents: 10 },
+        Line { ordinal: 9, unit: 1, device: 2, negative: false, cents: 99 },
+    ];
+    let (first, last, _, _, plus, _) = summarise(lines, 1);
+    assert(first == 1);
+    assert(last == 1);
+    assert(plus == 10);
+}
+
+#[test(should_fail_with = "batch: ordinals are not consecutive")]
+fn test_summarise_counted_slot_must_continue() {
+    let l = |ordinal: u64| Line { ordinal, unit: 7, device: 8, negative: false, cents: 1 };
+    // Claiming four invoices while the fourth slot only repeats the third.
+    let _ = summarise([l(5), l(6), l(7), l(7)], 4);
+}
+
+#[test(should_fail_with = "batch: mixed devices")]
+fn test_summarise_counted_slot_same_device() {
+    let lines = [
+        Line { ordinal: 1, unit: 7, device: 8, negative: false, cents: 10 },
+        Line { ordinal: 2, unit: 7, device: 9, negative: false, cents: 10 },
+    ];
+    let _ = summarise(lines, 2);
+}
+
+#[test(should_fail_with = "batch: no invoices")]
+fn test_summarise_rejects_zero() {
+    let _ = summarise([Line { ordinal: 1, unit: 7, device: 8, negative: false, cents: 10 }], 0);
+}
+
+#[test(should_fail_with = "batch: more invoices than this circuit holds")]
+fn test_summarise_rejects_count_above_capacity() {
+    let _ = summarise([Line { ordinal: 1, unit: 7, device: 8, negative: false, cents: 10 }], 2);
 }

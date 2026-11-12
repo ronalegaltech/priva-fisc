@@ -1,5 +1,6 @@
 // agg_leaf_k1: aggregation LEAF over 1 invoice. Statement and method: ../pf_efi/src/agg.nr.
 //
+// `count` (private) must be 1.
 // Public inputs : context, year, gamma, leaf_vk_hash, node_vk_hash
 // Public outputs: (taxpayer key hash, authority key hash, blinded run commitment)
 // The two key hashes are carried, not constrained (see ../pf_agg/src/lib.nr).
@@ -24,6 +25,7 @@ fn main(
     issuer_modulus: [u128; 18],
     issuer_redc: [u128; 18],
     salts: [Field; K],
+    count: u32,
     blind: Field,
     context: pub Field,
     year: pub u32,
@@ -47,6 +49,7 @@ fn main(
         issuer_modulus,
         issuer_redc,
         salts,
+        count,
         blind,
         context,
         year,

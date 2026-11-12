@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Aggregated proof over any number of leaves (noir/agg_*; method in noir/pf_efi/src/agg.nr).
+"""Aggregated proof over any number of invoices (noir/agg_*; method in noir/pf_efi/src/agg.nr).
 
-  agg.py prove  --k K --n N --out DIR --synthetic     N invented invoices in leaves of K
+  agg.py prove  --k K --n N --out DIR --synthetic [--keep FILE]    N invented invoices, leaves of K
   agg.py verify DIR
 
-Leaves are proved one by one, joined pairwise by node proofs into one proof for the whole run, and
-closed by a top proof that also checks the sorted list of receipt codes. `prove` leaves in DIR only
-the top proof, its public values and a readable statement.
+The invoices are cut, in order, into leaves of up to K (the last leaf may be partly filled). Leaves
+are proved one by one, joined pairwise by node proofs into one proof for the whole run, and closed
+by a top proof that also checks the sorted list of receipt codes. `prove` leaves in DIR only the top
+proof, its public values and a readable statement. With --keep it also writes, for the prover
+alone, the record needed to answer spot checks later (tools/efi/opening.py).
 
 `verify` derives every verification key locally: the top's (to check the proof) and those of the
 leaf, node and sorted-list circuits (to compare their key hashes with the ones the proof names).
-N must be a multiple of K and at most 256. Run `. tools/toolchain.env` first.
+At most 4096 invoices per proof. Run `. tools/toolchain.env` first.
 """
 import argparse
 import json
@@ -31,8 +33,9 @@ import batch_inputs  # noqa: E402
 P = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 DOMAIN_PAIR = int.from_bytes(b"PF-PAIR001", "big")
 DOMAIN_GAMMA = int.from_bytes(b"PF-GAMMA01", "big")
-SORTED = "agg_sorted_s256"
-SORTED_CAPACITY = 256
+DOMAIN_CODES = int.from_bytes(b"PF-CODES01", "big")
+SORTED = "agg_sorted_s4096"
+SORTED_CAPACITY = 4096
 LEAF_SIZES = (1, 10)
 
 
@@ -123,8 +126,24 @@ def pair_hash(left, right):
     return hash3(DOMAIN_PAIR, left, right)
 
 
+def slot_hash(values):
+    """Poseidon2 over the slots of one leaf, as the leaf circuit hashes them."""
+    return execute(f"agg_chain_k{len(values)}", f"values = {hexlist(values)}\n", want_output=True)[1][0]
+
+
 def fic_int(invoice):
     return int(invoice["resp"][3].decode().replace("-", ""), 16)
+
+
+def cut(invoices, k):
+    """Leaves of up to k, in order, as (slots, count). A short last leaf repeats its last invoice
+    in the unused slots: every slot must hold a well-formed signed pair, but only the first `count`
+    are part of the statement."""
+    leaves = []
+    for b in range(0, len(invoices), k):
+        part = invoices[b:b + k]
+        leaves.append((part + [part[-1]] * (k - len(part)), len(part)))
+    return leaves
 
 
 def tree_reduce(items, join):
@@ -142,10 +161,12 @@ def sorted_toml(sorted_fics, gamma, blind=None):
     return t + f'gamma = "{hex(gamma)}"\n'
 
 
-def challenge(k, invoices, sorted_fics):
+def challenge(leaves, sorted_fics):
     """gamma = H(commitment to the codes in leaf order, commitment to the sorted list)."""
-    groups = [[fic_int(i) for i in invoices[b:b + k]] for b in range(0, len(invoices), k)]
-    chains = [execute(f"agg_chain_k{k}", f"fics = {hexlist(g)}\n", want_output=True)[1][0] for g in groups]
+    chains = []
+    for slots, count in leaves:
+        codes = [fic_int(i) for i in slots[:count]] + [0] * (len(slots) - count)
+        chains.append(hash3(DOMAIN_CODES, count, slot_hash(codes)))
     fic_chain = tree_reduce(chains, pair_hash)
     _, (_, sorted_chain) = execute(SORTED + "_open", sorted_toml(sorted_fics, 0), want_output=True)
     return hash3(DOMAIN_GAMMA, fic_chain, sorted_chain), sorted_chain
@@ -168,14 +189,16 @@ def run_proof_toml(prefix_plural, items):
     )
 
 
-def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks=None):
-    """Full pipeline. `hooks` lets tests tamper with intermediate values; see test_agg.py."""
+def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks=None, keep=None):
+    """Full pipeline. `keep`: where to write the prover's spot-check record. `hooks` lets tests
+    tamper with intermediate values; see test_agg.py."""
     hooks = hooks or {}
     n = len(invoices)
-    if n % k or n == 0:
-        raise StepFailed(f"{n} invoices cannot be cut into leaves of {k}")
+    if n == 0:
+        raise StepFailed("no invoices")
     if n > SORTED_CAPACITY:
         raise StepFailed(f"at most {SORTED_CAPACITY} invoices with the sorted-list circuit that exists today")
+    leaves = hooks["cut"](invoices, k) if "cut" in hooks else cut(invoices, k)
     leaf, leaf_open = f"agg_leaf_k{k}", f"agg_leaf_k{k}_open"
     leaf_hash = hooks.get("leaf_vk_hash", vk_hash(leaf))
     node_hash = vk_hash("agg_node")
@@ -183,7 +206,7 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
 
     # A test may substitute the sorted list from the start, as a cheating prover would.
     sorted_fics = hooks["sorted"](invoices) if "sorted" in hooks else sorted(fic_int(i) for i in invoices)
-    gamma, sorted_chain = challenge(k, invoices, sorted_fics)
+    gamma, sorted_chain = challenge(leaves, sorted_fics)
     public = f'context = "{hex(context)}"\nyear = "{year}"\ngamma = "{hex(gamma)}"\n'
     hashes = f'leaf_vk_hash = "{hex(leaf_hash)}"\nnode_vk_hash = "{hex(node_hash)}"\n'
     os.makedirs(out_dir, exist_ok=True)
@@ -197,15 +220,17 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
 
         # leaves
         items = []
-        for b in range(0, n, k):
-            common = batch_inputs.invoice_toml(invoices[b:b + k], tmod, imod)
+        for index, (slots, count) in enumerate(leaves):
+            claimed = hooks.get("count", lambda _index, c: c)(index, count)
+            common = batch_inputs.invoice_toml(slots, tmod, imod) + f'count = "{claimed}"\n'
             leaf_gamma = hooks.get("leaf_gamma", gamma)
             leaf_public = public.replace(f'gamma = "{hex(gamma)}"', f'gamma = "{hex(leaf_gamma)}"')
             _, values = execute(leaf_open, common + leaf_public, want_output=True)
             blind = secrets.randbits(248)
             d = new_dir()
             prove(leaf, common + f'blind = "{hex(blind)}"\n' + leaf_public + hashes, d, "noir-recursive")
-            items.append({"dir": d, "is_leaf": True, "run": values, "blind": blind})
+            items.append({"dir": d, "is_leaf": True, "run": values[:11], "blind": blind,
+                          "openings": values[11:], "tree": {"h": hex(values[10]), "leaf": index}})
         keys = fields_of(os.path.join(items[0]["dir"], "public_inputs"))
         tkh, ikh = keys[5], keys[6]
         key_lines = f'taxpayer_key_hash = "{hex(tkh)}"\nissuer_key_hash = "{hex(ikh)}"\n'
@@ -222,8 +247,11 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
             text += "runs = [" + ", ".join(hexlist(i["run"]) for i in (left, right)) + "]\n"
             text += f'blinds = {hexlist([left["blind"], right["blind"]])}\nblind_out = "{hex(blind_out)}"\n'
             prove("agg_node", text + key_lines + public + hashes, d, "noir-recursive")
-            return {"dir": d, "is_leaf": False, "run": join_run_values(left["run"], right["run"]), "blind": blind_out}
+            joined = join_run_values(left["run"], right["run"])
+            return {"dir": d, "is_leaf": False, "run": joined, "blind": blind_out,
+                    "tree": {"h": hex(joined[10]), "left": left["tree"], "right": right["tree"]}}
 
+        leaf_items = list(items)
         whole = tree_reduce(items, join)
 
         # sorted list
@@ -251,7 +279,23 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
     st = decode(fields_of(os.path.join(out_dir, "public_inputs")))
     with open(os.path.join(out_dir, "statement.json"), "w") as f:
         json.dump(st, f, indent=1)
+    if keep:
+        import opening  # here, not at the top: opening.py uses this module too
+        record = {
+            "invoices": [opening.opening_of(i["doc"], i["resp"][3], hex(i["salt"])) for i in invoices],
+            "leaves": [{"count": count, "openings": [hex(v) for v in item["openings"]]}
+                       for (_, count), item in zip(leaves, leaf_items)],
+            "tree": whole["tree"],
+        }
+        write_private(keep, record)
     return st
+
+
+def write_private(path, record):
+    """The spot-check record names invoices and amounts: readable by the owner only."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(record, f, indent=1)
 
 
 def decode(v):
@@ -294,13 +338,14 @@ def main():
     p.add_argument("--n", type=int, required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--synthetic", action="store_true", required=True)
+    p.add_argument("--keep", help="write the prover's spot-check record to this file")
     v = sub.add_parser("verify")
     v.add_argument("dir")
     a = ap.parse_args()
     try:
         if a.cmd == "prove":
             invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(a.n, None, 1, None)
-            st = make_proof(a.k, invoices, tmod, imod, threshold, context, year, a.out)
+            st = make_proof(a.k, invoices, tmod, imod, threshold, context, year, a.out, keep=a.keep)
             print(f"aggregated proof for {st['invoice_count']} invoices written to {a.out}")
             return 0
         ok, st, problems, leaf_size = verify(a.dir)
@@ -311,7 +356,7 @@ def main():
         print("PROOF NOT ACCEPTED: " + "; ".join(problems))
         return 1
     print("PROOF VALID")
-    print(f"  what is proved      : {st['invoice_count']} consecutive invoices (leaves of {leaf_size}) of one business unit and device,")
+    print(f"  what is proved      : {st['invoice_count']} consecutive invoices (leaves of up to {leaf_size}) of one business unit and device,")
     print(f"                        issued in {st['year']}, each with an authority receipt for the same request;")
     print(f"                        no receipt used twice; sum of totals >= {st['threshold_cents'] // 100}.{st['threshold_cents'] % 100:02d} EUR")
     print(f"  starts at ordinal 1 : {'yes' if st['starts_at_ordinal_one'] else 'no'}")

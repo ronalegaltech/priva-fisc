@@ -1,7 +1,8 @@
 // Aggregation: more invoices than one circuit can hold.
 //
-// The invoices are cut, in ordinal order, into leaves of K. A LEAF proof checks its K invoices
-// (check_invoices) and publishes only a blinded commitment to the summary of that run. A NODE proof
+// The invoices are cut, in ordinal order, into leaves of up to K. A LEAF proof checks its invoices
+// (check_invoices; a leaf may be partly filled, see batch.nr) and publishes only a blinded
+// commitment to the summary of that run. A NODE proof
 // (../pf_agg) verifies two proofs of adjacent runs, each a leaf or another node, and publishes the
 // commitment of the joined run. A TOP proof verifies the proof of the whole run and one proof about
 // the sorted list of receipt codes, and states the result.
@@ -19,12 +20,14 @@
 use crate::batch::{BatchCore, check_invoices};
 use poseidon::poseidon2::Poseidon2;
 
-// Domain separators: ASCII "PF-RUN0001", "PF-PAIR001", "PF-GAMMA01", "PF-SORTED1", "PF-SCOPE01".
+// Domain separators: ASCII "PF-RUN0001", "PF-PAIR001", "PF-GAMMA01", "PF-SORTED1", "PF-SCOPE01",
+// "PF-CODES01".
 pub global DOMAIN_RUN: Field = 0x50462d52554e30303031;
 pub global DOMAIN_PAIR: Field = 0x50462d50414952303031;
 pub global DOMAIN_GAMMA: Field = 0x50462d47414d4d413031;
 pub global DOMAIN_SORTED: Field = 0x50462d534f5254454431;
 pub global DOMAIN_SCOPE: Field = 0x50462d53434f50453031;
+pub global DOMAIN_CODES: Field = 0x50462d434f4445533031;
 
 /// Summary of a run of consecutive invoices (one leaf, or several leaves joined). Kept private
 /// inside `run_commitment`.
@@ -82,14 +85,22 @@ pub fn pair_hash(left: Field, right: Field) -> Field {
     Poseidon2::hash([DOMAIN_PAIR, left, right], 3)
 }
 
-/// The run made of K checked invoices.
+/// Commitment to the receipt codes of one leaf: how many there are, and the K slots (zero from
+/// `count` on).
+pub fn codes_commitment<let K: u32>(count: Field, fics: [Field; K]) -> Field {
+    Poseidon2::hash([DOMAIN_CODES, count, Poseidon2::hash(fics, K)], 3)
+}
+
+/// The run made of the checked invoices of one leaf.
 pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field) -> Run {
     let mut fic_prod: Field = 1;
     for i in 0..K {
-        fic_prod *= gamma - c.fics[i];
+        if i < c.count {
+            fic_prod *= gamma - c.fics[i];
+        }
     }
     Run {
-        count: K as Field,
+        count: c.count as Field,
         first_ordinal: c.first_ordinal as Field,
         last_ordinal: c.last_ordinal as Field,
         unit: c.unit,
@@ -97,7 +108,7 @@ pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field) -> Run {
         sum_plus: c.sum_plus as Field,
         sum_minus: c.sum_minus as Field,
         fic_prod,
-        fic_chain: Poseidon2::hash(c.fics, K),
+        fic_chain: codes_commitment(c.count as Field, c.fics),
         null_chain: Poseidon2::hash(c.nullifiers, K),
         open_chain: Poseidon2::hash(c.openings, K),
     }
@@ -176,6 +187,7 @@ pub fn prove_leaf<let K: u32, let M: u32>(
     issuer_modulus: [u128; 18],
     issuer_redc: [u128; 18],
     salts: [Field; K],
+    count: u32,
     blind: Field,
     context: Field,
     year: u32,
@@ -195,14 +207,16 @@ pub fn prove_leaf<let K: u32, let M: u32>(
         issuer_modulus,
         issuer_redc,
         salts,
+        count,
         context,
         year,
     );
     (c.taxpayer_key_hash, c.issuer_key_hash, run_commitment(leaf_run(c, gamma), blind))
 }
 
-/// The same computation as `prove_leaf`, returning the run in the clear. For the PROVER's own use
-/// (executed, never proved or shared): the next proof up needs these values as private inputs.
+/// The same computation as `prove_leaf`, returning the run and the leaf's opening commitments in
+/// the clear. For the PROVER's own use (executed, never proved or shared): the next proof up needs
+/// the run as private input, and a later spot check needs the opening commitments.
 pub fn leaf_run_in_clear<let K: u32, let M: u32>(
     request_docs: [[u8; M]; K],
     request_lens: [u32; K],
@@ -217,10 +231,11 @@ pub fn leaf_run_in_clear<let K: u32, let M: u32>(
     issuer_modulus: [u128; 18],
     issuer_redc: [u128; 18],
     salts: [Field; K],
+    count: u32,
     context: Field,
     year: u32,
     gamma: Field,
-) -> [Field; 11] {
+) -> ([Field; 11], [Field; K]) {
     let c = check_invoices(
         request_docs,
         request_lens,
@@ -235,10 +250,37 @@ pub fn leaf_run_in_clear<let K: u32, let M: u32>(
         issuer_modulus,
         issuer_redc,
         salts,
+        count,
         context,
         year,
     );
-    run_to_fields(leaf_run(c, gamma))
+    (run_to_fields(leaf_run(c, gamma)), c.openings)
+}
+
+#[test]
+fn test_partly_filled_leaf_counts_only_its_invoices() {
+    let gamma = 0x1234567;
+    let c: BatchCore<3> = BatchCore {
+        count: 2,
+        taxpayer_key_hash: 1,
+        issuer_key_hash: 2,
+        first_ordinal: 4,
+        last_ordinal: 5,
+        unit: 7,
+        device: 8,
+        sum_plus: 300,
+        sum_minus: 0,
+        fics: [3, 5, 0],
+        nullifiers: [11, 12, 0],
+        openings: [21, 22, 0],
+    };
+    let r = leaf_run(c, gamma);
+    assert(r.count == 2);
+    assert(r.last_ordinal == 5);
+    assert(r.fic_prod == (gamma - 3) * (gamma - 5));
+    // The same two codes in a full leaf of two give another commitment only through the slots.
+    assert(r.fic_chain == codes_commitment(2, [3, 5, 0]));
+    assert(r.fic_chain != codes_commitment(3, [3, 5, 0]));
 }
 
 #[test]

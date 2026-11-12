@@ -1,7 +1,8 @@
-// agg_leaf_k10_open: the leaf's run IN THE CLEAR, for the prover's own use.
+// agg_leaf_k10_open: the leaf's run and opening commitments IN THE CLEAR, for the prover's own use.
 //
-// Executed only (`nargo execute`), never proved and never shared: its output is the private input
-// the next proof up needs for this leaf. Same checks as agg_leaf_k10.
+// Executed only (`nargo execute`), never proved and never shared: the run is the private input the
+// next proof up needs for this leaf, the opening commitments are kept for spot checks. Same checks
+// as agg_leaf_k10.
 
 use pf_efi::agg::leaf_run_in_clear;
 
@@ -22,10 +23,11 @@ fn main(
     issuer_modulus: [u128; 18],
     issuer_redc: [u128; 18],
     salts: [Field; K],
+    count: u32,
     context: Field,
     year: u32,
     gamma: Field,
-) -> pub [Field; 11] {
+) -> pub ([Field; 11], [Field; K]) {
     leaf_run_in_clear(
         request_docs,
         request_lens,
@@ -40,6 +42,7 @@ fn main(
         issuer_modulus,
         issuer_redc,
         salts,
+        count,
         context,
         year,
         gamma,

@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""PRIVA-FISC command line: make a batch proof, check one.
+"""PRIVA-FISC command line: make a proof over a run of invoices, check one.
 
-  pf.py prove  --out DIR --threshold EUR --year Y [--context HEX]  REQ1.xml RESP1.xml [REQ2.xml RESP2.xml ...]
-  pf.py prove  --out DIR --synthetic K            (invented invoices, for demos and tests)
+  pf.py prove  --out DIR --threshold EUR --year Y [--context HEX] [--keep FILE]  REQ1.xml RESP1.xml [REQ2.xml RESP2.xml ...]
+  pf.py prove  --out DIR --synthetic N [--keep FILE]      (invented invoices, for demos and tests)
   pf.py verify DIR [--taxpayer-cert FILE]
 
 `prove` runs on the taxpayer's machine. It reads signed request/response files (in ordinal order),
-proves the batch statement, and leaves in DIR only what may be handed over: the proof, its public
-values and a readable statement. Witness files are deleted.
+proves the statement, and leaves in DIR only what may be handed over: the proof, its public values
+and a readable statement. Witness files are deleted. With --keep it also writes, for the taxpayer
+alone, the record needed to answer spot checks later (tools/efi/opening.py); without it the proof
+cannot be spot-checked afterwards.
+
+1 or 10 invoices give a batch proof (noir/batch_k1, noir/batch_k10), which publishes one nullifier
+and one opening commitment per invoice. Any other number, up to 4096, gives an aggregated proof
+(noir/agg_*, leaves of up to 10 invoices), which publishes one root for each instead.
 
 `verify` runs on the verifier's machine. It does NOT trust a verification key supplied with the
 proof: it derives the key from the circuit in this repository, checks the proof against it, and
@@ -19,7 +25,7 @@ request, which embeds it) `verify` checks that the key in the certificate is the
 and prints the certificate's subject. Checking the certificate itself (issuer, validity,
 revocation) is done with ordinary X.509 tools and is not part of this command.
 
-Batch sizes available: 1 and 10 (noir/batch_k1, noir/batch_k10). Run `. tools/toolchain.env` first.
+Run `. tools/toolchain.env` first.
 """
 import argparse
 import json
@@ -34,10 +40,13 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
 sys.path.insert(0, os.path.join(HERE, "efi"))
+import agg  # noqa: E402
 import batch_inputs  # noqa: E402
 import keyhash  # noqa: E402
+import opening  # noqa: E402
 
-SIZES = (1, 10)
+SIZES = (1, 10)   # batch circuits
+LEAF = 10         # leaf size of aggregated proofs
 NOT_PROVED = (
     "that the tax authority saw the CONTENT of these invoices (its signature covers the request "
     "UUID and the receipt code only) - ask for a spot check, see tools/efi/opening.py",
@@ -108,7 +117,15 @@ def prove(a):
         context = int(a.context, 0) if a.context else secrets.randbits(120)
         year = a.year
     if k not in SIZES:
-        sys.exit(f"{k} invoices given; available batch sizes are {SIZES}")
+        os.makedirs(a.out, exist_ok=True)
+        try:
+            agg.make_proof(LEAF, invoices, tmod, imod, threshold, context, year, a.out, keep=a.keep)
+        except agg.StepFailed as e:
+            sys.exit(f"no proof: {e}")
+        print(f"aggregated proof for {k} invoices written to {a.out} (proof, public_inputs, statement.json)")
+        if a.keep:
+            print(f"spot-check record written to {a.keep} - keep it private")
+        return 0
 
     circuit = circuit_json(k)
     tag = "Run" + next(tempfile._get_candidate_names())
@@ -130,26 +147,44 @@ def prove(a):
     with open(os.path.join(a.out, "statement.json"), "w") as f:
         json.dump(statement, f, indent=1)
     print(f"proof for {k} invoice(s) written to {a.out} (proof, public_inputs, statement.json)")
+    if a.keep:
+        agg.write_private(a.keep, {"invoices": [opening.opening_of(i["doc"], i["resp"][3], hex(i["salt"])) for i in invoices]})
+        print(f"spot-check record written to {a.keep} - keep it private")
+    return 0
 
 
 def verify(a):
     values = read_values(os.path.join(a.dir, "public_inputs"))
-    st = decode(values)
-    k = st["invoice_count"]
-    circuit = circuit_json(k)
-    with tempfile.TemporaryDirectory() as tmp:
-        run(["bb", "write_vk", "-b", circuit, "-o", tmp, "-t", "evm"], what="deriving the verification key")
-        r = subprocess.run(["bb", "verify", "-k", os.path.join(tmp, "vk"), "-p", os.path.join(a.dir, "proof"),
-                            "-i", os.path.join(a.dir, "public_inputs"), "-t", "evm"], capture_output=True, text=True)
-    if "Proof verified successfully" not in (r.stdout + r.stderr):
-        print("PROOF INVALID")
-        return 1
+    if len(values) == 13:
+        try:
+            ok, st, problems, leaf_size = agg.verify(a.dir)
+        except agg.StepFailed as e:
+            sys.exit(f"verification could not run: {e}")
+        if not ok:
+            print("PROOF INVALID: " + "; ".join(problems))
+            return 1
+        k = st["invoice_count"]
+        circuit_line = f"agg_top over leaves of up to {leaf_size} (all verification keys derived locally)"
+        published = "one root each (see statement.json)"
+    else:
+        st = decode(values)
+        k = st["invoice_count"]
+        circuit = circuit_json(k)
+        with tempfile.TemporaryDirectory() as tmp:
+            run(["bb", "write_vk", "-b", circuit, "-o", tmp, "-t", "evm"], what="deriving the verification key")
+            r = subprocess.run(["bb", "verify", "-k", os.path.join(tmp, "vk"), "-p", os.path.join(a.dir, "proof"),
+                                "-i", os.path.join(a.dir, "public_inputs"), "-t", "evm"], capture_output=True, text=True)
+        if "Proof verified successfully" not in (r.stdout + r.stderr):
+            print("PROOF INVALID")
+            return 1
+        circuit_line = f"{st['circuit']} (verification key derived locally)"
+        published = f"{k} each (see statement.json)"
 
     with open(os.path.join(ROOT, "registry", "issuer_keys.json")) as f:
         keys = {int(e["key_hash"], 16): e for e in json.load(f)["keys"]}
     issuer = keys.get(int(st["issuer_key_hash"], 16))
     print("PROOF VALID")
-    print(f"  circuit                : {st['circuit']} (verification key derived locally)")
+    print(f"  circuit                : {circuit_line}")
     print(f"  what is proved         : {k} consecutive invoice(s) of one business unit and one device,")
     print(f"                           issued in {st['year']}, each signed by the taxpayer key and each with")
     print("                           an authority receipt for the same request; no receipt used twice;")
@@ -162,7 +197,7 @@ def verify(a):
     else:
         print("  authority key          : NOT IN registry/issuer_keys.json - do not rely on this proof")
     print(f"  context                : {st['context']}")
-    print(f"  nullifiers / openings  : {k} each (see statement.json)")
+    print(f"  nullifiers / openings  : {published}")
     cert_ok = True
     if a.taxpayer_cert:
         cert = keyhash.describe(keyhash.load_cert(a.taxpayer_cert, a.taxpayer_cert.lower().endswith(".xml")))
@@ -188,7 +223,8 @@ def main():
     p.add_argument("--threshold", help="minimum sum of totals, in EUR (e.g. 1500.00)")
     p.add_argument("--year", type=int)
     p.add_argument("--context", help="hex value naming the verifier/purpose; random if omitted")
-    p.add_argument("--synthetic", type=int, choices=SIZES)
+    p.add_argument("--synthetic", type=int, metavar="N")
+    p.add_argument("--keep", metavar="FILE", help="write the spot-check record (private) to FILE")
     p.add_argument("files", nargs="*")
     v = sub.add_parser("verify")
     v.add_argument("dir")

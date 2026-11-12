@@ -8,11 +8,11 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
-| `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices, publishes a blinded commitment to the run. |
+| `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices (the 10-slot leaf may hold fewer), publishes a blinded commitment to the run. |
 | `agg_node` | circuit | Joins two adjacent runs, each proved by a leaf or by another node. |
-| `agg_sorted_s256` | circuit | Up to 256 receipt codes sorted strictly increasing. |
+| `agg_sorted_s4096` | circuit | Up to 4,096 receipt codes sorted strictly increasing. |
 | `agg_top` | circuit | Final proof of an aggregate. |
-| `agg_leaf_k*_open`, `agg_sorted_s256_open`, `agg_chain_k*`, `agg_hash3` | helper | Executed by the prover to get private inputs and the challenge. Never proved, never shared. |
+| `agg_leaf_k*_open`, `agg_sorted_s4096_open`, `agg_chain_k*`, `agg_hash3` | helper | Executed to get private inputs, the challenge, and the hashes of a spot check. Never proved. |
 | `open_invoice` | helper | Recomputes one invoice's opening commitment during a spot check. |
 | `rsa_key_hash` | helper | Key hash of an RSA modulus, as the circuits publish it. |
 | `leaf_request_v0`, `leaf_response_v0` | circuit | A request or a receipt on its own. Used for component tests and benchmarks. |
@@ -39,7 +39,10 @@ reading the same bytes in step.
 
 ## How runs are joined
 
-Invoices are cut, in ordinal order, into leaves of 10. A leaf proof publishes only a blinded
+Invoices are cut, in ordinal order, into leaves of up to 10. The leaf circuit always has 10 slots;
+a private `count` says how many of them, from the first, are the statement. The other slots must
+still hold well-formed signed pairs (the prover repeats one of its own), but nothing read from
+them reaches the result, so any number of invoices fits. A leaf proof publishes only a blinded
 commitment to its run (count, first and last ordinal, unit, device, partial sums). A node opens two
 such commitments, checks that the right run continues the left one, and commits to the joined run.
 The top proof compares the grand total with the threshold.
@@ -50,21 +53,25 @@ product of `(gamma - code)` over the leaves with the same product over the sorte
 the hash of commitments to both lists, so the prover cannot pick it.
 
 The top proof names the key hashes of the leaf, node and sorted-list circuits it was built from. A
-verifier has to compare them with the circuits it trusts. `tools/efi/agg.py verify` and the Starknet
+verifier has to compare them with the circuits it trusts. `tools/pf.py verify` and the Starknet
 registry do.
+
+An aggregate publishes one root over the opening commitments of all its invoices instead of the
+commitments themselves. In a spot check the prover reveals an invoice together with the other
+commitments of its leaf and the sibling hashes up to that root (`tools/efi/opening.py`).
 
 ## Tests
 
 ```sh
 (cd pf_xmldsig && nargo test)                  # 17
-(cd pf_efi && nargo test)                      # 14
+(cd pf_efi && nargo test)                      # 21
 python3 ../tools/efi/test_leaf_response.py     # 7 cases
 python3 ../tools/efi/test_leaf_request.py      # 9 cases
 python3 ../tools/efi/test_batch.py --k 1       # 8 cases
 python3 ../tools/efi/test_batch.py --k 10      # 12 cases
 python3 ../tools/efi/test_opening.py           # 4 cases
-python3 ../tools/efi/test_agg.py               # 12 cases, each through proving
-python3 ../tools/efi/test_agg.py --k 10        # 3 cases: 20 and 30 invoices, one attack
+python3 ../tools/efi/test_agg.py               # 13 cases through proving, 4 spot checks
+python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 6 spot checks
 ```
 
 The aggregation tests always run the prover. Proofs inside a node or the top proof are checked
