@@ -184,7 +184,7 @@ fn test_aggregate_proof_is_not_a_batch_proof() {
 #[test]
 fn test_aggregate_records_what_was_proved() {
     let s = setup();
-    assert(s.aggregate_values.len() == 13, 'fixture: 13 public values');
+    assert(s.aggregate_values.len() == 12, 'fixture: 12 public values');
     list_issuer_key(s.registry, *s.aggregate_values.at(7));
 
     start_cheat_caller_address(s.registry.contract_address, submitter());
@@ -198,7 +198,7 @@ fn test_aggregate_records_what_was_proved() {
     assert(a.taxpayer_key_hash == *s.aggregate_values.at(6), 'taxpayer key');
     assert(a.issuer_key_hash == *s.aggregate_values.at(7), 'issuer key');
     assert(a.starts_at_one, 'starts at one');
-    assert(s.registry.is_nullifier_used(*s.aggregate_values.at(12)), 'scope nullifier recorded');
+    assert(s.registry.is_nullifier_used(*s.aggregate_values.at(11)), 'scope nullifier recorded');
 }
 
 #[test]

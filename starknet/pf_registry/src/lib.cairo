@@ -14,7 +14,13 @@
 //!     and sorted-list circuits it was built from; it is accepted only if those are the circuits
 //!     this registry was deployed with.
 //! The two kinds of nullifier cannot be compared with each other, so a context takes one kind of
-//! proof only: the first attestation in a context decides which.
+//! proof only: the first attestation in a context decides which. (Whoever holds a valid proof of
+//! the other kind for that context could send it first; a relying party keeps its context to
+//! itself and the taxpayer until the attestation it expects is recorded.)
+//! A scope allows ONE aggregate per context: a second one for the same taxpayer key, unit, device
+//! and year is refused even if it covers more invoices or other ones.
+//! An attestation is never withdrawn here. What a later spot check finds is for the relying
+//! party to record.
 //!
 //! The context is chosen by whoever relies on the attestations and given to the taxpayer. The
 //! registry records it; it cannot know which context a relying party issued. A relying party reads
@@ -35,8 +41,8 @@ pub const BATCH_PUBLIC_VALUES: u32 = 26;
 
 /// Public values of an aggregate proof, in order: threshold, context, year, key hashes of the leaf,
 /// node and sorted-list circuits, taxpayer key hash, issuer key hash, starts-at-one, number of
-/// invoices, nullifier-chain root, opening-chain root, scope nullifier.
-pub const AGGREGATE_PUBLIC_VALUES: u32 = 13;
+/// invoices, root of the opening tree, scope nullifier.
+pub const AGGREGATE_PUBLIC_VALUES: u32 = 12;
 
 #[derive(Copy, Drop, Serde, starknet::Store, PartialEq, Debug)]
 pub struct Attestation {
@@ -145,7 +151,6 @@ pub mod PrivaFiscRegistry {
         pub threshold_cents: u64,
         pub invoice_count: u32,
         pub starts_at_one: bool,
-        pub nullifier_root: u256,
         pub opening_root: u256,
     }
 
@@ -283,9 +288,8 @@ pub mod PrivaFiscRegistry {
             let issuer_key_hash = *values.at(7);
             let starts_at_one = *values.at(8) == 1;
             let invoice_count: u32 = (*values.at(9)).try_into().expect('count out of range');
-            let nullifier_root = *values.at(10);
-            let opening_root = *values.at(11);
-            let scope_nullifier = *values.at(12);
+            let opening_root = *values.at(10);
+            let scope_nullifier = *values.at(11);
 
             // The top proof only says "proofs of the circuits with these key hashes verified".
             assert(*values.at(3) == self.leaf_vk_hash.read(), 'unknown leaf circuit');
@@ -320,7 +324,6 @@ pub mod PrivaFiscRegistry {
                         threshold_cents,
                         invoice_count,
                         starts_at_one,
-                        nullifier_root,
                         opening_root,
                     },
                 );

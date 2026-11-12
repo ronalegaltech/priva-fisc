@@ -42,57 +42,75 @@ def skip_four(invoices, k):
 
 def spot_check(record, proof_dir, positions, n):
     """Yields (label, passed) for a spot check of the given invoice positions (the run starts at
-    ordinal 1 and holds n invoices)."""
-    check = opening.check_against_proof
+    ordinal 1 and holds n invoices). The proof itself was verified by the caller."""
+    def check(o, **asked):
+        return opening.check_against_proof(o, proof_dir, verified=True, **asked)
+
     openings = [opening.reveal_from_record(record, index=i) for i in positions]
     for i, o in zip(positions, openings):
-        yield f"spot check: invoice {i + 1} opens", check(o, proof_dir, ordinal=i + 1)
+        yield f"spot check: invoice {i + 1} opens", check(o, ordinal=i + 1)
     o = dict(openings[0])
     cents = int(o["total"].replace(".", "")) + 1
     o["total"] = f"{cents // 100}.{cents % 100:02d}"
-    yield "spot check: amount raised by one cent", not check(o, proof_dir, ordinal=o["ordinal"])
+    yield "spot check: amount raised by one cent", not check(o, ordinal=o["ordinal"])
     o = dict(openings[0])
     o["device"] = o["device"][:-1] + ("0" if o["device"][-1] != "0" else "1")
-    yield "spot check: another device code", not check(o, proof_dir, ordinal=o["ordinal"])
-    yield "spot check: asked for another ordinal", not check(openings[0], proof_dir, ordinal=openings[0]["ordinal"] + 1)
+    yield "spot check: another device code", not check(o, ordinal=o["ordinal"])
+    yield "spot check: asked for another ordinal", not check(openings[0], ordinal=openings[0]["ordinal"] + 1)
     if len(openings) > 1:
         o = dict(openings[0])
         o["proof"] = openings[1]["proof"]
-        yield "spot check: opening with another's proof", not check(o, proof_dir, ordinal=o["ordinal"])
+        yield "spot check: opening with another's proof", not check(o, ordinal=o["ordinal"])
     first, last = opening.reveal_from_record(record, index=0), opening.reveal_from_record(record, index=n - 1)
-    yield "spot check: first invoice shown as first", check(first, proof_dir, edge="first")
-    yield "spot check: last invoice shown as last", check(last, proof_dir, edge="last")
+    yield "spot check: first invoice shown as first", check(first, edge="first")
+    yield "spot check: last invoice shown as last", check(last, edge="last")
     if n > 2:
         middle = opening.reveal_from_record(record, index=n // 2)
-        yield "spot check: a middle invoice as first", not check(middle, proof_dir, edge="first")
-        yield "spot check: a middle invoice as last", not check(middle, proof_dir, edge="last")
+        yield "spot check: a middle invoice as first", not check(middle, edge="first")
+        yield "spot check: a middle invoice as last", not check(middle, edge="last")
     if n > 1:
-        yield "spot check: last invoice as first", not check(last, proof_dir, edge="first")
-        yield "spot check: first invoice as last", not check(first, proof_dir, edge="last")
+        yield "spot check: last invoice as first", not check(last, edge="first")
+        yield "spot check: first invoice as last", not check(first, edge="last")
 
-    # Asking by amount: the verifier draws a point of the total; exactly one invoice covers it.
-    draw = secrets.randbits(64)
-    covering = opening.reveal_from_record(record, point=draw)
-    yield "spot check: the invoice covering a drawn point", check(covering, proof_dir, point=draw)
-    yield "spot check: same opening for another draw", not check(covering, proof_dir, point=draw ^ 1)
+    # Asking by amount: the verifier's seed fixes the points; exactly one invoice covers each.
+    seed = opening.new_seed()
+    covering = opening.reveal_from_record(record, seed=seed, draw=1)
+    yield "spot check: the invoice covering draw 1", check(covering, seed=seed, draw=1)
+    yield "spot check: same opening for draw 2", not check(covering, seed=seed, draw=2)
+    yield "spot check: same opening, another seed", not check(covering, seed=opening.new_seed(), draw=1)
     if n > 1:
-        other = (covering["position"] + 1) % n
-        wrong = opening.reveal_from_record(record, index=other, point=draw)
-        yield "spot check: another invoice for that point", not check(wrong, proof_dir, point=draw)
-        yield "spot check: ...which is still a member", check(wrong, proof_dir, ordinal=other + 1)
+        root = int(agg.decode(agg.fields_of(os.path.join(proof_dir, "public_inputs")))["opening_root"], 16)
+        other = covering["ordinal"] % n  # position of the next invoice (ordinals start at 1)
+        wrong = opening.reveal_from_record(record, index=other, point=opening.draw_point(seed, root, 1))
+        yield "spot check: another invoice for that draw", not check(wrong, seed=seed, draw=1)
+        yield "spot check: ...which is still a member", check(wrong, ordinal=other + 1)
+    refused = 0
+    for bad in ({"seed": opening.new_seed(), "draw": 1}, {"seed": seed, "draw": opening.MAX_DRAWS + 1}):
+        try:
+            opening.reveal_from_record(record, **bad)
+        except ValueError:
+            refused += 1
+    yield "prover's tool: no second seed, no eleventh draw", refused == 2
 
 
 def weighted_draws(record, proof_dir, large):
-    """Twenty draws by amount against a run in which one invoice carries almost all of the total."""
-    hits = 0
-    for _ in range(20):
-        draw = secrets.randbits(64)
-        o = opening.reveal_from_record(record, point=draw)
-        if not opening.check_against_proof(o, proof_dir, point=draw):
+    """Ten draws by amount against a run in which one invoice carries almost all of the total."""
+    seed, hits = opening.new_seed(), 0
+    for number in range(1, opening.MAX_DRAWS + 1):
+        o = opening.reveal_from_record(record, seed=seed, draw=number)
+        if not opening.check_against_proof(o, proof_dir, seed=seed, draw=number, verified=True):
             yield "draw by amount: opening accepted", False
             return
-        hits += o["position"] == large
-    yield f"draws by amount asking for the large invoice: {hits} of 20", hits >= 15
+        hits += o["ordinal"] == large + 1
+    yield f"draws by amount asking for the large invoice: {hits} of {opening.MAX_DRAWS}", hits >= 7
+
+
+def left_deep(items, join):
+    """Joins the leaves one after another instead of pairwise: the first leaves end up deepest."""
+    whole = items[0]
+    for item in items[1:]:
+        whole = join(whole, item)
+    return whole
 
 
 def main():
@@ -105,7 +123,7 @@ def main():
     def case(label, n, tamper=None, hooks=None, expect=None, spot=None, large=None):
         """n invoices. expect=None: must be accepted. Otherwise: must be refused, with `expect` in
         the reason. spot: invoice positions to open after an accepted proof. large: position of
-        one invoice far larger than the rest; twenty draws by amount must mostly ask for it."""
+        one invoice far larger than the rest; the draws by amount must mostly ask for it."""
         nonlocal failed
         invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(n, tamper, 1, None, large=large)
         checks = []
@@ -146,6 +164,7 @@ def main():
         case("leaf passed off as a node", 2, hooks={"is_leaf": lambda item: False}, expect="proving agg_node")
         case("leaf said to hold two invoices", 1, hooks={"count": lambda index, c: 2}, expect="more invoices than this circuit holds")
         case("valid, 4 leaves, one large invoice", 4, large=2)
+        case("tree too deep for a spot check", 14, hooks={"reduce": left_deep}, expect="deeper than a spot check can follow")
     else:
         case("valid, 20 invoices (2 full leaves)", 20)
         case("valid, 23 invoices (10 + 10 + 3)", 23, spot=[22, 4])

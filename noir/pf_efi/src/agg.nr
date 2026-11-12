@@ -44,9 +44,9 @@ pub struct Run {
     pub sum_minus: Field,
     pub fic_prod: Field, // prod (gamma - fic) over the run
     pub fic_chain: Field, // commitment to the run's receipt codes, in order
-    pub null_chain: Field, // commitment to the run's nullifiers, in order
     pub open_chain: Field, // the run's opening commitments and positive totals (see spot.nr)
     pub scope: Field, // scope nullifier of the presentation this run belongs to
+    pub depth: Field, // joins between this run's deepest leaf and its top (0 for a leaf)
 }
 
 pub global RUN_FIELDS: u32 = 12;
@@ -62,16 +62,16 @@ pub fn run_from_fields(f: [Field; 12]) -> Run {
         sum_minus: f[6],
         fic_prod: f[7],
         fic_chain: f[8],
-        null_chain: f[9],
-        open_chain: f[10],
-        scope: f[11],
+        open_chain: f[9],
+        scope: f[10],
+        depth: f[11],
     }
 }
 
 pub fn run_to_fields(r: Run) -> [Field; 12] {
     [
         r.count, r.first_ordinal, r.last_ordinal, r.unit, r.device, r.sum_plus, r.sum_minus,
-        r.fic_prod, r.fic_chain, r.null_chain, r.open_chain, r.scope,
+        r.fic_prod, r.fic_chain, r.open_chain, r.scope, r.depth,
     ]
 }
 
@@ -79,7 +79,7 @@ pub fn run_commitment(r: Run, blind: Field) -> Field {
     Poseidon2::hash(
         [
             DOMAIN_RUN, r.count, r.first_ordinal, r.last_ordinal, r.unit, r.device, r.sum_plus,
-            r.sum_minus, r.fic_prod, r.fic_chain, r.null_chain, r.open_chain, r.scope, blind,
+            r.sum_minus, r.fic_prod, r.fic_chain, r.open_chain, r.scope, r.depth, blind,
         ],
         14,
     )
@@ -134,14 +134,19 @@ pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field, context: Field, year:
         sum_minus: c.sum_minus as Field,
         fic_prod,
         fic_chain: codes_commitment(c.count as Field, c.fics),
-        null_chain: Poseidon2::hash(c.nullifiers, K),
         open_chain: openings_leaf(c.openings, c.plus),
         scope: scope_nullifier(context, c.taxpayer_key_tag, c.unit, c.device, year as Field),
+        depth: 0,
     }
 }
 
-/// Joins two adjacent runs. The right run must continue the left one.
+/// Joins two adjacent runs. The right run must continue the left one. The joined run is one
+/// level deeper than the deeper of the two: the top proof bounds the depth, so that every invoice
+/// stays within reach of the spot-check circuit whatever shape the prover gives the tree.
 pub fn join_runs(left: Run, right: Run) -> Run {
+    left.depth.assert_max_bit_size::<8>();
+    right.depth.assert_max_bit_size::<8>();
+    let deeper = if (left.depth as u8) > (right.depth as u8) { left.depth } else { right.depth };
     assert(right.first_ordinal == left.last_ordinal + 1, "join: ordinals are not consecutive across runs");
     assert(right.unit == left.unit, "join: mixed business units");
     assert(right.device == left.device, "join: mixed devices");
@@ -156,9 +161,9 @@ pub fn join_runs(left: Run, right: Run) -> Run {
         sum_minus: left.sum_minus + right.sum_minus,
         fic_prod: left.fic_prod * right.fic_prod,
         fic_chain: pair_hash(left.fic_chain, right.fic_chain),
-        null_chain: pair_hash(left.null_chain, right.null_chain),
         open_chain: openings_join(left.open_chain, left.sum_plus, right.open_chain, right.sum_plus),
         scope: left.scope,
+        depth: deeper + 1,
     }
 }
 
@@ -311,6 +316,7 @@ fn test_partly_filled_leaf_counts_only_its_invoices() {
     let r = leaf_run(c, gamma, 99, 2026);
     assert(r.count == 2);
     assert(r.scope == scope_nullifier(99, 3, 7, 8, 2026));
+    assert(r.depth == 0);
     assert(r.last_ordinal == 5);
     assert(r.fic_prod == (gamma - 3) * (gamma - 5));
     // The same two codes in a full leaf of two give another commitment only through the slots.
@@ -342,17 +348,20 @@ fn test_sorted_list_rejects_hidden_tail() {
     let _ = check_sorted([3, 5, 7, 9], 3, 1);
 }
 
+// Test helper: a run of ten invoices from `first`, in scope `scope`, `depth` joins deep.
+fn run_of(first: Field, scope: Field, depth: Field) -> Run {
+    run_from_fields([10, first, first + 9, 7, 8, 100, 5, 2, 3, 4, scope, depth])
+}
+
 #[test(should_fail_with = "join: ordinals are not consecutive across runs")]
 fn test_join_rejects_gap() {
-    let l = run_from_fields([10, 1, 10, 7, 8, 100, 0, 2, 3, 4, 5, 9]);
-    let r = run_from_fields([10, 12, 21, 7, 8, 100, 0, 2, 3, 4, 5, 9]);
-    let _ = join_runs(l, r);
+    let _ = join_runs(run_of(1, 9, 0), run_of(12, 9, 0));
 }
 
 #[test]
 fn test_join_adds_up() {
-    let l = run_from_fields([10, 1, 10, 7, 8, 100, 5, 2, 3, 4, 5, 9]);
-    let r = run_from_fields([10, 11, 20, 7, 8, 40, 1, 3, 6, 7, 8, 9]);
+    let l = run_from_fields([10, 1, 10, 7, 8, 100, 5, 2, 3, 4, 9, 0]);
+    let r = run_from_fields([10, 11, 20, 7, 8, 40, 1, 3, 6, 7, 9, 2]);
     let j = join_runs(l, r);
     assert(j.count == 20);
     assert(j.first_ordinal == 1);
@@ -361,11 +370,11 @@ fn test_join_adds_up() {
     assert(j.sum_minus == 6);
     assert(j.fic_prod == 6);
     assert(j.fic_chain == pair_hash(3, 6));
+    assert(j.open_chain == openings_join(4, 100, 7, 40));
+    assert(j.depth == 3); // one more than the deeper side
 }
 
 #[test(should_fail_with = "join: runs of different presentations")]
 fn test_join_rejects_other_scope() {
-    let l = run_from_fields([10, 1, 10, 7, 8, 100, 0, 2, 3, 4, 5, 9]);
-    let r = run_from_fields([10, 11, 20, 7, 8, 100, 0, 2, 3, 4, 5, 10]);
-    let _ = join_runs(l, r);
+    let _ = join_runs(run_of(1, 9, 0), run_of(11, 10, 0));
 }

@@ -68,6 +68,7 @@ TAMPERS = (
     "forged-receipt",   # one receipt signed by a key that is not the authority's
     "forged-request",   # one request signed by a key that is not the taxpayer's
     "total-edit",       # an amount changed after signing
+    "old-receipt",      # a receipt the authority dated in the previous year
 )
 
 
@@ -115,6 +116,8 @@ def synthetic(k, tamper, start, threshold, large=None, inflate=None):
         doc, req_sig, _ = ingest_request(signed_xml(req_key, request))
 
         resp_fields = (c["uuid"].encode(), (c["issue"]).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
+        if tamper == "old-receipt" and n == k - 1:
+            resp_fields = (resp_fields[0], (str(c["year"] - 1) + c["issue"][4:]).encode()) + resp_fields[2:]
         if tamper == "broken-link" and n == k - 1:
             resp_fields = (str(uuid.uuid4()).encode(),) + resp_fields[1:]
         resp_key = new_key() if (tamper == "forged-receipt" and n == k - 1) else authority

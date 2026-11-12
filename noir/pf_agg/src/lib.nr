@@ -16,6 +16,7 @@ use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_h
 use pf_efi::agg::{
     Run, gamma_from, join_runs, openings_root, run_commitment, run_from_fields, sorted_commitment,
 };
+use pf_efi::spot::MAX_DEPTH;
 
 /// Verifies one proof about a run (a leaf proof or a node proof) and returns the run.
 fn verify_run_proof(
@@ -76,7 +77,7 @@ pub fn prove_node(
 
 /// TOP: the proof of the whole run and the proof about the sorted receipt codes together give the
 /// statement. Returns (taxpayer key hash, authority key hash, starts at ordinal 1, number of
-/// invoices, nullifier-chain root, root of the opening tree, scope nullifier).
+/// invoices, root of the opening tree, scope nullifier).
 pub fn prove_top(
     run_vk: UltraHonkVerificationKey,
     run_proof: UltraHonkZKProof,
@@ -96,7 +97,7 @@ pub fn prove_top(
     leaf_vk_hash: Field,
     node_vk_hash: Field,
     sorted_vk_hash: Field,
-) -> (Field, Field, bool, u32, Field, Field, Field) {
+) -> (Field, Field, bool, u32, Field, Field) {
     // The challenge is fixed by commitments to both lists.
     let gamma = gamma_from(run_fields[8], sorted_chain);
 
@@ -113,6 +114,10 @@ pub fn prove_top(
     );
     assert(run.fic_prod == sorted_prod, "top: sorted list does not match the receipts in the leaves");
 
+    // No invoice may sit deeper than the spot-check circuit can follow.
+    run.depth.assert_max_bit_size::<8>();
+    assert((run.depth as u32) <= MAX_DEPTH, "top: the tree is deeper than a spot check can follow");
+
     run.count.assert_max_bit_size::<32>();
     run.sum_plus.assert_max_bit_size::<96>();
     run.sum_minus.assert_max_bit_size::<96>();
@@ -126,7 +131,6 @@ pub fn prove_top(
         issuer_key_hash,
         run.first_ordinal == 1,
         run.count as u32,
-        run.null_chain,
         openings_root(run.open_chain, run.sum_plus),
         run.scope,
     )

@@ -63,11 +63,33 @@ def main():
             print(f"{'PASS' if ok else 'FAIL'}  {label:28s} {'agrees' if not got else 'differs in ' + ', '.join(got)}")
 
         record = {name: o[name] for name in tool.COMPARED}
+        shifted = o["total"].replace(".", "")
+        shifted = shifted[:-1] + "." + shifted[-1]  # the same digits, ten times the amount
         compare("record equal to the opening", record, [])
         compare("same codes in capitals", dict(record, iic=o["iic"].upper(), fic=o["fic"].upper()), [])
+        compare("total written as a number", dict(record, total=float(o["total"])), [])
         compare("record with another total", dict(record, total="0.01"), ["total"])
+        compare("same digits, decimal point moved", dict(record, total=shifted), ["total"])
+        compare("total with three decimals", dict(record, total=o["total"] + "0"), ["total"])
         compare("record of another device", dict(record, device="zz999zz999", ordinal=o["ordinal"] + 1), ["ordinal", "device"])
         compare("no record found", {}, list(tool.COMPARED))
+
+        def seller(label, lookup, subject, want):
+            nonlocal failed
+            got = tool.differences(o, lookup, subject)
+            ok = got == want
+            failed += not ok
+            print(f"{'PASS' if ok else 'FAIL'}  {label:28s} {'agrees' if not got else 'differs in ' + ', '.join(got)}")
+
+        subject = "CN=Invented Company,2.5.4.97=VATME-12345678,C=ME"
+        seller("seller is the certificate's", dict(record, seller_tin="12345678"), subject, [])
+        seller("seller is someone else", dict(record, seller_tin="87654321"), subject, ["seller"])
+        seller("record names no seller", record, subject, ["seller"])
+
+        r = sh(sys.executable, os.path.join(HERE, "opening.py"), "check", "--opening", opening, "--commitment", commitment, "--first", check=False)
+        ok = r.returncode != 0 and "MATCH" not in r.stdout
+        failed += not ok
+        print(f"{'PASS' if ok else 'FAIL'}  {'--first without the proof':28s} {'refused' if ok else 'ACCEPTED'}")
     print("all cases behave as required" if not failed else f"{failed} case(s) WRONG")
     return 1 if failed else 0
 

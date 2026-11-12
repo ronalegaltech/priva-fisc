@@ -156,9 +156,54 @@ def verify_proof(name, proof, public_inputs, target="evm"):
         for label, data in (("proof", proof), ("public_inputs", public_inputs)):
             with open(os.path.join(tmp, label), "wb") as f:
                 f.write(data)
-        r = subprocess.run(["bb", "verify", "-k", os.path.join(tmp, "vk"), "-p", os.path.join(tmp, "proof"),
-                            "-i", os.path.join(tmp, "public_inputs"), "-t", target], capture_output=True, text=True)
-    return "Proof verified successfully" in (r.stdout + r.stderr)
+        return bb_verifies(os.path.join(tmp, "vk"), os.path.join(tmp, "proof"), os.path.join(tmp, "public_inputs"), target)
+
+
+def bb_verifies(vk, proof, public_inputs, target="evm"):
+    """True if `bb verify` accepts. Decided by its exit status, never by what it prints: its error
+    messages quote file paths, and a path can be made to say anything."""
+    if not all(os.path.isfile(p) for p in (vk, proof, public_inputs)):
+        return False
+    r = subprocess.run(["bb", "verify", "-k", vk, "-p", proof, "-i", public_inputs, "-t", target],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def parse_context(text):
+    """A context given on the command line: hexadecimal, with or without 0x."""
+    try:
+        value = int(text, 16)
+    except (TypeError, ValueError):
+        raise StepFailed(f"the context must be a hexadecimal number, got {text!r}")
+    if not 0 <= value < P:
+        raise StepFailed("the context is out of range")
+    return value
+
+
+BATCH_SIZES = (1, 10)
+AGGREGATE_VALUES = 12
+
+
+def kind_of(values):
+    """"aggregate", or the batch size, from the number of public values of a proof."""
+    if len(values) == AGGREGATE_VALUES:
+        return "aggregate"
+    for k in BATCH_SIZES:
+        if len(values) == 6 + 2 * k:
+            return k
+    raise StepFailed(f"unexpected number of public values ({len(values)})")
+
+
+def verify_batch(proof_dir):
+    """True if the batch proof in `proof_dir` verifies under a locally derived key."""
+    k = kind_of(fields_of(os.path.join(proof_dir, "public_inputs")))
+    if k == "aggregate":
+        return False
+    name = f"batch_k{k}"
+    with tempfile.TemporaryDirectory() as tmp:
+        run(["bb", "write_vk", "-b", compiled(name), "-o", tmp, "-t", "evm"], what=f"key of {name}")
+        return bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
+                           os.path.join(proof_dir, "public_inputs"))
 
 
 def fic_int(invoice):
@@ -206,8 +251,8 @@ def join_run_values(left, right):
     """The joined run, computed as the node circuit does (indices as in pf_efi::agg::Run)."""
     return [
         left[0] + right[0], left[1], right[2], left[3], left[4], left[5] + right[5], left[6] + right[6],
-        left[7] * right[7] % P, pair_hash(left[8], right[8]), pair_hash(left[9], right[9]),
-        openings_join(left[10], left[5], right[10], right[5]), left[11],
+        left[7] * right[7] % P, pair_hash(left[8], right[8]),
+        openings_join(left[9], left[5], right[9], right[5]), left[10], max(left[11], right[11]) + 1,
     ]
 
 
@@ -260,7 +305,7 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
             d = new_dir()
             prove(leaf, common + f'blind = "{hex(blind)}"\n' + leaf_public + hashes, d, "noir-recursive")
             items.append({"dir": d, "is_leaf": True, "run": values[:12], "blind": blind,
-                          "openings": values[12:], "tree": {"h": hex(values[10]), "sum": values[5], "leaf": index}})
+                          "openings": values[12:], "tree": {"h": hex(values[9]), "sum": values[5], "leaf": index}})
         keys = fields_of(os.path.join(items[0]["dir"], "public_inputs"))
         tkh, ikh = keys[5], keys[6]
         key_lines = f'taxpayer_key_hash = "{hex(tkh)}"\nissuer_key_hash = "{hex(ikh)}"\n'
@@ -279,10 +324,10 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
             prove("agg_node", text + key_lines + public + hashes, d, "noir-recursive")
             joined = join_run_values(left["run"], right["run"])
             return {"dir": d, "is_leaf": False, "run": joined, "blind": blind_out,
-                    "tree": {"h": hex(joined[10]), "sum": joined[5], "left": left["tree"], "right": right["tree"]}}
+                    "tree": {"h": hex(joined[9]), "sum": joined[5], "left": left["tree"], "right": right["tree"]}}
 
         leaf_items = list(items)
-        whole = tree_reduce(items, join)
+        whole = hooks.get("reduce", tree_reduce)(items, join)
 
         # sorted list
         sorted_blind = secrets.randbits(248)
@@ -332,15 +377,20 @@ def write_private(path, record):
 
 
 def decode(v):
-    if len(v) != 13:
+    if len(v) != AGGREGATE_VALUES:
         raise StepFailed(f"unexpected number of public values ({len(v)})")
     return {
         "circuit": "agg_top", "threshold_cents": v[0], "context": hex(v[1]), "year": v[2],
         "leaf_vk_hash": hex(v[3]), "node_vk_hash": hex(v[4]), "sorted_vk_hash": hex(v[5]),
         "taxpayer_key_hash": hex(v[6]), "issuer_key_hash": hex(v[7]), "starts_at_ordinal_one": v[8] == 1,
-        "invoice_count": v[9], "nullifier_root": hex(v[10]), "opening_root": hex(v[11]),
-        "scope_nullifier": hex(v[12]),
+        "invoice_count": v[9], "opening_root": hex(v[10]), "scope_nullifier": hex(v[11]),
     }
+
+
+def leaf_size_of(values):
+    """Leaf size of the leaf circuit an aggregated proof names, or None if it is not one of ours."""
+    named = int(decode(values)["leaf_vk_hash"], 16)
+    return next((k for k in LEAF_SIZES if vk_hash(f"agg_leaf_k{k}") == named), None)
 
 
 def verify(proof_dir):
@@ -349,9 +399,9 @@ def verify(proof_dir):
     problems = []
     with tempfile.TemporaryDirectory() as tmp:
         run(["bb", "write_vk", "-b", compiled("agg_top"), "-o", tmp, "-t", "evm"], what="top key")
-        r = subprocess.run(["bb", "verify", "-k", os.path.join(tmp, "vk"), "-p", os.path.join(proof_dir, "proof"),
-                            "-i", os.path.join(proof_dir, "public_inputs"), "-t", "evm"], capture_output=True, text=True)
-    if "Proof verified successfully" not in (r.stdout + r.stderr):
+        accepted = bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
+                               os.path.join(proof_dir, "public_inputs"))
+    if not accepted:
         problems.append("the top proof does not verify")
     leaf_size = next((k for k in LEAF_SIZES if vk_hash(f"agg_leaf_k{k}") == int(st["leaf_vk_hash"], 16)), None)
     if leaf_size is None:
@@ -380,7 +430,7 @@ def main():
         if a.cmd == "prove":
             invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(a.n, None, 1, None)
             if a.context:
-                context = int(a.context, 0)
+                context = parse_context(a.context)
             st = make_proof(a.k, invoices, tmod, imod, threshold, context, year, a.out, keep=a.keep)
             print(f"aggregated proof for {st['invoice_count']} invoices written to {a.out}")
             return 0
@@ -391,7 +441,7 @@ def main():
     if not ok:
         print("PROOF NOT ACCEPTED: " + "; ".join(problems))
         return 1
-    print("PROOF VALID")
+    print("TOP PROOF AND CIRCUITS OK - authority key, context and earlier presentations are NOT checked here: use tools/pf.py verify")
     print(f"  what is proved      : {st['invoice_count']} consecutive invoices (leaves of up to {leaf_size}) of one business unit and device,")
     print(f"                        issued in {st['year']}, each with an authority receipt for the same request;")
     print(f"                        no receipt used twice; sum of totals >= {st['threshold_cents'] // 100}.{st['threshold_cents'] % 100:02d} EUR")

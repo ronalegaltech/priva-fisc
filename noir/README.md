@@ -42,11 +42,13 @@ have one accepted form (no leading zeros, month, day and time in range, offset +
 
 ## What is derived from what
 
-The authority signs only the request UUID and the receipt code (FIC). Everything else the
-statement uses comes from the request, which the taxpayer signs and could sign again differently.
-Two rules follow:
+The authority signs only the request UUID, the receipt code (FIC) and its own timestamp.
+Everything else the statement uses comes from the request, which the taxpayer signs and could sign
+again differently. Three rules follow:
 
 - A nullifier is derived from the context and the FIC, never from anything the taxpayer writes.
+- The year is checked against the authority's timestamp on the receipt as well as against the
+  invoice's own date, so receipts of another year cannot be brought into a run.
 - Every request field the statement relies on (ordinal, time, total, business unit, device) is in
   the invoice's opening commitment, together with IIC and FIC, so that a spot check against the
   authority's record covers all of them. `tools/efi/test_replay.py` shows both.
@@ -78,28 +80,40 @@ An aggregate publishes one root over the opening commitments of all its invoices
 commitments themselves. The tree under that root also carries, at every node, the sum of the
 positive totals below it. In a spot check the prover reveals an invoice and proves, with the small
 `spot_open` circuit, that its commitment sits under the root, without showing the path: sibling
-hashes and sums and the other commitments of the leaf stay private. The same proof tells the
+hashes and sums and the other commitments of the leaf are not revealed. The same proof tells the
 verifier whether the invoice is the first or the last of the run, and whether it covers a point
-of the total that the verifier drew. Drawing points opens invoices with probability proportional
-to their amount, the way auditors sample by monetary unit: an inflated invoice that carries a
-large part of a threshold is asked for most of the time (`tools/efi/opening.py`, `spot.nr`).
+of the sum of positive totals. Points come from a seed the verifier chooses; asking by point opens
+invoices with probability proportional to their amount, the way auditors sample by monetary unit
+(`tools/efi/opening.py`, `spot.nr`).
+
+Two limits of asking by amount are worth knowing before relying on it. The share is taken of the
+gross sum of positive totals, which the verifier does not see and which genuine invoices that
+were later credited enlarge; and an answer tells the verifier roughly where the opened invoice
+sits in the running total, so answers add up to knowledge of the total. The README lists what
+follows from both.
+
+The top proof accepts a tree at most 12 joins deep, whatever shape the prover gives it, so that
+every invoice of a valid aggregate can be opened by the spot-check circuit.
 
 Outside a circuit the tools compute Poseidon2 in Python (`tools/efi/poseidon2.py`).
 
 ## Tests
 
+`sh ../tools/test.sh` runs everything below and the command-line test in one go; `full` adds the
+10-invoice circuits, the contracts and the local network run.
+
 ```sh
 (cd pf_xmldsig && nargo test)                  # 27
-(cd pf_efi && nargo test)                      # 38
+(cd pf_efi && nargo test)                      # 39
 python3 ../tools/efi/test_leaf_response.py     # 7 cases
 python3 ../tools/efi/test_leaf_request.py      # 14 cases
 python3 ../tools/efi/test_replay.py            # 6 checks on an invoice signed again
-python3 ../tools/efi/test_batch.py --k 1       # 8 cases
-python3 ../tools/efi/test_batch.py --k 10      # 12 cases
-python3 ../tools/efi/test_opening.py           # 9 cases
+python3 ../tools/efi/test_batch.py --k 1       # 9 cases
+python3 ../tools/efi/test_batch.py --k 10      # 13 cases
+python3 ../tools/efi/test_opening.py           # 16 cases
 python3 ../tools/efi/test_poseidon2.py         # 13 checks of the Python hash against circuits
-python3 ../tools/efi/test_agg.py               # 14 cases through proving, 17 spot checks
-python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 30 spot checks
+python3 ../tools/efi/test_agg.py               # 15 cases through proving, 19 spot checks
+python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 34 spot checks
 ```
 
 The aggregation tests always run the prover. Proofs inside a node or the top proof are checked

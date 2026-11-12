@@ -19,12 +19,16 @@ A verifier embeds its circuit's verification key. After any change under `noir/`
 `refresh_fixture.sh`, otherwise the contracts reject proofs of the new circuits.
 
 On a local network (starknet-devnet) the flow runs end to end for both kinds of proof: declare,
-deploy, list the authority key, submit (accepted: about 864M L2 gas for the batch of 10, 820M for
+deploy, list the authority key, submit (accepted: about 865M L2 gas for the batch of 10, 822M for
 an aggregate of 25), submit the same proof again (refused with `invoice already presented`). The
 cost of an aggregate does not depend on how many invoices it covers. Starknet documents a limit of
 1.11 * 10^9 L2 gas per transaction. Nothing is deployed to a public network.
 
 The registry records the context a proof was made for; it cannot know which context a relying
-party issued. A relying party reads only the attestations in its own context. `submitted_by` is
+party issued. The first attestation in a context decides which kind of proof that context takes,
+so a relying party keeps a context to itself and the taxpayer until its attestation is recorded.
+A scope (taxpayer key, unit, device, year) gets one aggregate per context, even if a later one
+would cover more invoices. Nothing is ever withdrawn: what a later spot check finds is for the
+relying party to keep. A relying party reads only the attestations in its own context. `submitted_by` is
 the account that sent the transaction: a proof is not bound to its sender, so this is information
 about the transaction, not about the taxpayer.

@@ -15,40 +15,54 @@ Status: research prototype. It has not been reviewed by anyone outside the team.
 For one taxpayer key and one authority key:
 
 - every invoice request is signed by the taxpayer key;
-- every receipt is signed by the authority key and names the request it answers;
-- all invoices come from the same business unit and device, in the stated year;
-- the ordinals are consecutive, so nothing inside the run was left out;
+- every receipt is signed by the authority key, names the request it answers, and was dated by the
+  authority in the stated year;
+- as the taxpayer signed them, all invoices come from one business unit and device, carry the
+  stated year, and are numbered without a gap;
 - no receipt is used twice;
 - the sum of the totals is at least the stated threshold.
 
 The verifier sees the two key hashes, the year, the threshold, how many invoices there are, whether
 the run starts at ordinal 1, the context the proof was made for, and nullifiers and opening
-commitments (one per invoice in a batch proof; one scope nullifier and two roots in an aggregate
-proof). It does not see amounts, parties, invoice codes or ordinals.
+commitments (one of each per invoice in a batch proof; one scope nullifier and one root in an
+aggregate proof). It does not see amounts, parties or invoice codes. When a run starts at ordinal
+1, the count tells which ordinals it covers.
 
 The context is a value the verifier chooses and gives to the taxpayer. Nullifiers are bound to it,
-so the same invoices cannot be shown twice to one verifier, and a proof made for one verifier is of
-no use to another. A nullifier comes from the invoice's receipt code, which only the authority
-issues: signing the invoice again does not change it. The other side of that choice: the receipt
-code is printed on the invoice, so someone who knows it and the context can tell whether that
-invoice is in a batch proof. An aggregate proof publishes no per-invoice nullifiers.
+so a proof made for one verifier is of no use to another. A nullifier comes from the invoice's
+receipt code, which only the authority issues: signing the invoice again does not change it. A
+proof alone cannot show that it was not presented before; a verifier that keeps the nullifiers it
+has accepted (`pf.py verify --ledger`, or the Starknet registry) can refuse a repeat. The other
+side of that choice: the receipt code is printed on the invoice, so someone who knows it and the
+context can tell whether that invoice is in a batch proof. An aggregate proof publishes no
+per-invoice nullifiers.
 
 ## What a proof does not say
 
 - That the authority saw the content of an invoice. The authority's signature covers only the
-  request identifier and the receipt code. Everything the statement takes from a request (ordinal,
-  year, total, business unit, device) is what the taxpayer signed. A taxpayer who registers cheap
-  invoices and then signs different content under the same identifiers would pass. The answer is a
-  spot check: the verifier picks a few invoices, the taxpayer opens those, and the verifier
-  compares them with the authority's public invoice lookup and the seller in it with the
-  taxpayer's certificate. See `tools/efi/opening.py`.
-- That the amounts are true. For a threshold, one inflated invoice can carry most of the amount,
-  and asking for a few invoices by number will usually miss it. With an aggregated proof the
-  verifier can ask by amount instead: it draws a point of the total and the taxpayer must open the
-  invoice that covers it, so invoices are opened with probability proportional to their amount and
-  a large one is asked for most of the time. This catches inflated invoices. It does not catch a
-  credit note made smaller, which is drawn rarely or never; for that only asking by number
-  remains.
+  request identifier, the receipt code and its own timestamp. Everything else the statement uses
+  (ordinal, total, business unit, device) is what the taxpayer signed, and the taxpayer can sign
+  the same registered invoice again with other content. A taxpayer who registers cheap invoices
+  and then signs different amounts, or drops an invoice and renumbers the rest, would pass. The
+  answer is a spot check: the verifier asks for a few invoices, the taxpayer opens those, and the
+  verifier compares them with the authority's public invoice lookup and the seller in it with the
+  taxpayer's certificate. A renumbered run fails at any opening after the gap. See
+  `tools/efi/opening.py`.
+- That the amounts are true. One inflated invoice can carry most of a threshold, and asking for a
+  few invoices by number will usually miss it. With an aggregated proof the verifier can ask by
+  amount: its seed fixes points of the sum of positive totals, and the taxpayer must open the
+  invoice that covers each point, so an invoice is asked for with probability equal to its share
+  of that sum. What this gives and what it does not:
+  - It finds inflated invoices in proportion to their share of the GROSS sum of positive totals,
+    which the verifier does not see. A taxpayer can enlarge that sum with a genuine large invoice
+    and its genuine credit note; the net stays the same and most draws then land on the genuine
+    invoice. So the number of draws gives no computable assurance when credit notes may exist.
+  - It does not find a credit note that was signed again as a smaller one, as zero or as a small
+    invoice: its amount is small or negative, so it is drawn rarely or never. Only asking by
+    number can find it, with probability (invoices asked) / (invoices in the run).
+  - Each answer tells the verifier roughly where the opened invoice sits in the running total.
+    The prover's tool therefore answers one seed per proof and at most ten draws.
+  - A request that is not answered is a failed spot check. The verifier does not draw again.
 - That no invoices exist after the last one, or on another device of the same taxpayer.
 - That an invoice was paid or corresponds to a real sale.
 
@@ -66,8 +80,22 @@ invoice is in a batch proof. An aggregate proof publishes no per-invoice nullifi
 
 You need Noir 1.0.0, Barretenberg 6.0.0, Scarb 2.21.0, Starknet Foundry 0.64.1 with
 universal-sierra-compiler, Garaga built from commit `d97b4d3`, starknet-devnet 0.10.1, and Python
-3.12 with `lxml` and `cryptography`. `tools/toolchain.env` expects them under `~/.pf-toolchain` and
-puts them on the path.
+3.12 with `lxml` and `cryptography`. `tools/toolchain.env` puts them on the path and expects this
+layout (set `PF_TOOLCHAIN` to use another directory than `~/.pf-toolchain`):
+
+| Under `~/.pf-toolchain` | What | Needed for |
+|---|---|---|
+| `nargo/bin/nargo` | Noir 1.0.0, from the `noir-lang/noir` release | everything |
+| `bb/bb` | Barretenberg 6.0.0 | proving and verifying |
+| `scarb/bin/scarb` | Scarb 2.21.0, from the `software-mansion/scarb` release | contracts |
+| `snfoundry/bin/snforge`, `sncast` | Starknet Foundry 0.64.1 | contract tests, local network run |
+| `usc/bin/universal-sierra-compiler` | 2.10.3 | contract tests |
+| `devnet/starknet-devnet` | 0.10.1, from the `0xSpaceShard/starknet-devnet` release | local network run |
+| `garaga/`, `garaga-venv/bin/garaga` | Garaga at commit `d97b4d3269fe`, installed from source into its own Python environment | regenerating the verifiers |
+| `rustup/`, `cargo/` | Rust | building Garaga and snforge's Scarb plugin |
+
+The versions belong together: Garaga at that commit generates verifiers for proofs of
+Barretenberg 6.0.0, and Noir 1.0.0 is what that Barretenberg reads.
 
 ```sh
 . tools/toolchain.env
@@ -77,25 +105,22 @@ python3 tools/demo.py    # the whole story in five minutes: an honest taxpayer, 
 python3 tools/pf.py prove --synthetic 10 --context 0x2a --out /tmp/proof    # 10 invented invoices
 python3 tools/pf.py verify /tmp/proof --context 0x2a    # valid; warns that the invented authority key is not listed
 
-python3 tools/pf.py prove --synthetic 25 --out /tmp/agg --keep /tmp/record.json    # 25 invoices, one proof
-python3 tools/pf.py verify /tmp/agg
+python3 tools/pf.py prove --synthetic 25 --context 0x2b --out /tmp/agg --keep /tmp/record.json    # 25 invoices, one proof
+python3 tools/pf.py verify /tmp/agg --context 0x2b --ledger /tmp/ledger.json    # a second run refuses the repeat
 
 # spot check: the prover opens invoice 18, the verifier checks it against the proof
 python3 tools/efi/opening.py reveal --record /tmp/record.json --index 17 --out /tmp/opening.json
 python3 tools/efi/opening.py check --opening /tmp/opening.json --proof /tmp/agg --ordinal 18
 
-# spot check by amount: the verifier draws a point, the prover opens the invoice that covers it
-R=$(python3 tools/efi/opening.py draw)
-python3 tools/efi/opening.py reveal --record /tmp/record.json --point $R --out /tmp/opening.json
-python3 tools/efi/opening.py check --opening /tmp/opening.json --proof /tmp/agg --point $R
+# spot check by amount: the verifier's seed fixes the points, the prover opens the invoice at point 1
+SEED=$(python3 tools/efi/opening.py draw)
+python3 tools/efi/opening.py reveal --record /tmp/record.json --seed $SEED --draw 1 --out /tmp/opening.json
+python3 tools/efi/opening.py check --opening /tmp/opening.json --proof /tmp/agg --seed $SEED --draw 1
 # then: look the invoice up at the authority, note what it shows, and compare
-python3 tools/efi/opening.py compare --opening /tmp/opening.json --authority lookup.json
-python3 tools/efi/test_replay.py              # what signing an invoice again can and cannot change
+python3 tools/efi/opening.py compare --opening /tmp/opening.json --authority lookup.json --taxpayer-cert certificate.der
 
-python3 tools/efi/test_batch.py --k 10        # attacks the 10-invoice circuit must refuse
-python3 tools/efi/test_agg.py                 # same for the aggregation, through proving
-(cd starknet/pf_registry && snforge test)     # contract tests against a real proof
-sh tools/starknet/devnet_demo.sh              # declare, deploy, submit, replay on a local network
+sh tools/test.sh                              # every fast test, about 10 minutes once compiled
+sh tools/test.sh full                         # adds the 10-invoice circuits, contracts, local network
 ```
 
 With real files, give the request and receipt of each invoice in ordinal order:
@@ -113,8 +138,10 @@ invoices and amounts and stays with the taxpayer.
 circuit in this repository and looks the authority key up in `registry/issuer_keys.json`. For an
 aggregate it also derives the key hashes of the leaf, node and sorted-list circuits and compares
 them with the ones the proof names. With `--context` it refuses a proof made for another context;
-a verifier should always pass the context it issued. It exits with 0 only for a valid proof under
-a production authority key.
+a verifier should always pass the context it issued. With `--ledger` it refuses a proof whose
+nullifiers it has accepted before. Whether a proof is valid is decided by the verifier program's
+exit status, never by text. It exits with 0 only for a valid proof under a production authority
+key.
 
 A proof names the taxpayer only by the hash of the signing key. Who that is comes from the
 taxpayer's fiscalization certificate:
@@ -132,19 +159,19 @@ Apple M3, 16 GB.
 
 | | Gates | Proving | Memory | Proof |
 |---|---|---|---|---|
-| 1 invoice (batch) | 341,623 | 2 to 3 s | 1.0 GB | 9.9 KB |
-| 10 invoices (batch) | 3,327,413 | 20 to 24 s | 4.5 to 6 GB | 11.1 KB |
-| 3 invoices (one partly filled leaf) | 3,330,132 per leaf; top 1.47M; sorted list 255,262 | 60 s in total | 4.5 to 6 GB per leaf | 10.7 KB |
-| 13 invoices (10 + 3) | same circuits, one node of 1.47M | 97 s in total | 4.5 to 6 GB per leaf | 10.7 KB |
-| 25 invoices (10 + 10 + 5) | same circuits, two nodes | 134 s in total | 4.5 to 6 GB per leaf | 10.7 KB |
-| 100 invoices (10 leaves) | same circuits, nine nodes | 427 s in total | 4.5 to 6 GB per leaf | 10.7 KB |
+| 1 invoice (batch) | 341,657 | 2 to 3 s | 1.0 GB | 9.9 KB |
+| 10 invoices (batch) | 3,327,727 | 20 to 24 s | 4 to 6 GB | 11.1 KB |
+| 3 invoices (one partly filled leaf) | 3,329,410 per leaf; top 1.47M; sorted list 255,262 | 64 s in total | 4 to 6 GB per leaf | 10.7 KB |
+| 13 invoices (10 + 3) | same circuits, one node of 1.47M | 104 s in total | 4 to 6 GB per leaf | 10.7 KB |
+| 25 invoices (10 + 10 + 5) | same circuits, two nodes | 148 s in total | 4 to 6 GB per leaf | 10.7 KB |
+| 100 invoices (10 leaves) | same circuits, nine nodes | 426 s in total | 4 to 6 GB per leaf | 10.7 KB |
 | one spot-check opening | 8,387 | about 1 s | under 0.1 GB | 17 KB file |
 
 An aggregate costs about 40 s more for every further leaf of 10 (times vary by a tenth from run to
 run). Leaves are proved one after another, so memory does not grow with the number of invoices.
 
-On a local Starknet network both kinds of proof are accepted in one transaction each: about 864M L2
-gas for the batch of 10 and 820M for an aggregate of 25, under the documented limit of 1.11 * 10^9
+On a local Starknet network both kinds of proof are accepted in one transaction each: about 865M L2
+gas for the batch of 10 and 822M for an aggregate of 25, under the documented limit of 1.11 * 10^9
 per transaction. The on-chain cost of an aggregate does not grow with the number of invoices. Nothing
 has been deployed to a public network.
 
@@ -161,8 +188,10 @@ has been deployed to a public network.
 - The only real authority key in the registry is the 2020 test-environment signer. Receipts from
   a test environment can be had for invented invoices, so `verify` does not treat it as a
   production key.
-- A scope nullifier (aggregate proofs) rests on unit and device codes the taxpayer wrote. It stops
-  the same run from being shown twice; a spot check is what confirms the codes.
+- A scope nullifier (aggregate proofs) rests on unit and device codes the taxpayer wrote. It allows
+  one aggregate per taxpayer key, unit, device, year and context; a spot check is what confirms
+  the codes. On a chain nobody runs a spot check, so there the same receipts can be attested again
+  under another code.
 
 ## Data
 

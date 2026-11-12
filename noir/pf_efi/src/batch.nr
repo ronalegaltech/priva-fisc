@@ -7,7 +7,8 @@
 //     * RequestUUID_i == UUID_i                                  (receipt belongs to this request)
 //   and across the batch
 //     * same business unit and same device for all i;
-//     * every issue year equals the public `year`;
+//     * every issue year equals the public `year`, and so does the date the authority put on the
+//       receipt (receipts of other years cannot be dressed up as this year's);
 //     * ordinal_{i+1} == ordinal_i + 1                           (no gap inside the batch)
 //     * all FIC_i are different                                  (no receipt used twice)
 //     * sum of totals (negative totals subtract) >= public `threshold_cents`.
@@ -85,6 +86,13 @@ pub struct BatchCore<let K: u32> {
     pub nullifiers: [Field; K],
     pub openings: [Field; K],
     pub plus: [Field; K],
+}
+
+/// Whether a receipt dated (year, month * 100 + day) by the authority belongs to `year`. The first
+/// three days of the next January are accepted: an invoice issued on New Year's Eve may be
+/// registered after midnight.
+pub fn receipt_in_year(send_year: u32, send_month_day: u32, year: u32) -> bool {
+    (send_year == year) | ((send_year == year + 1) & (send_month_day <= 103))
 }
 
 /// Ordinal, place and amount of one invoice, as read from its signed request.
@@ -170,6 +178,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
 
         assert(resp.request_uuid == req.uuid, "batch: receipt does not belong to this request");
         assert(req.issue_year == year, "batch: invoice is not from the stated year");
+        assert(receipt_in_year(resp.send_year, resp.send_month_day, year), "batch: receipt is not from the stated year");
 
         lines[i] = Line {
             ordinal: req.ordinal,
@@ -265,6 +274,17 @@ pub fn prove_batch<let K: u32, let M: u32>(
     assert(c.sum_plus >= c.sum_minus + threshold_cents, "batch: total is below the threshold");
 
     (c.taxpayer_key_hash, c.issuer_key_hash, c.first_ordinal == 1, c.nullifiers, c.openings)
+}
+
+#[test]
+fn test_receipt_must_be_dated_in_the_year() {
+    assert(receipt_in_year(2026, 101, 2026));
+    assert(receipt_in_year(2026, 1231, 2026));
+    assert(receipt_in_year(2027, 103, 2026)); // registered just after New Year
+    assert(!receipt_in_year(2027, 104, 2026));
+    assert(!receipt_in_year(2027, 1231, 2026));
+    assert(!receipt_in_year(2025, 1231, 2026)); // last year's receipt
+    assert(!receipt_in_year(2028, 101, 2026));
 }
 
 #[test]

@@ -3,7 +3,7 @@
 
   pf.py prove  --out DIR --threshold EUR --year Y [--context HEX] [--keep FILE]  REQ1.xml RESP1.xml [REQ2.xml RESP2.xml ...]
   pf.py prove  --out DIR --synthetic N [--keep FILE]      (invented invoices, for demos and tests)
-  pf.py verify DIR [--context HEX] [--taxpayer-cert FILE]
+  pf.py verify DIR [--context HEX] [--ledger FILE] [--taxpayer-cert FILE]
 
 `prove` runs on the taxpayer's machine. It reads signed request/response files (in ordinal order),
 proves the statement, and leaves in DIR only what may be handed over: the proof, its public values
@@ -19,15 +19,20 @@ and one opening commitment per invoice. Any other number, up to 4096, gives an a
 proof: it derives the key from the circuit in this repository, checks the proof against it, and
 looks the authority key up in registry/issuer_keys.json.
 
-The context is a value the VERIFIER chooses and hands to the taxpayer (who passes it to `prove`).
-Nullifiers are bound to it, so a proof made for one verifier is of no use to another. Give the
-same value to `verify --context`: a proof made for another context is refused. A verifier who
-accepts whatever context a proof carries has no protection against the same invoices being shown
-twice.
+The context is a hexadecimal value the VERIFIER chooses and hands to the taxpayer (who passes it
+to `prove`). Nullifiers are bound to it, so a proof made for one verifier is of no use to another.
+Give the same value to `verify --context`: a proof made for another context is refused.
+
+A proof alone cannot show that it was not presented before: that needs memory. `verify --ledger
+FILE` keeps it: the nullifiers of every proof accepted with that file are written to it, and a
+proof that repeats one of them in the same context is refused. (The Starknet registry does the same
+on a chain.) A verifier who uses neither, or who accepts whatever context a proof carries, has no
+protection against the same invoices being shown twice.
 
 Exit status of `verify`: 0 valid, with a production authority key; 1 invalid; 2 valid, but the
 authority key is not listed or is not a production key; 3 the certificate given is not the
-taxpayer key of the proof; 4 the proof was made for another context.
+taxpayer key of the proof; 4 the proof was made for another context; 5 a nullifier of this proof
+is already in the ledger.
 
 A proof names the taxpayer only by the hash of the signing key. Who that is comes from the
 taxpayer's fiscalization certificate: with --taxpayer-cert (a certificate file, or any signed EFI
@@ -62,8 +67,9 @@ NOT_PROVED = (
     "UUID and the receipt code only. Ordinals, amounts, year, business unit and device are what "
     "the taxpayer signed - ask for a spot check, see tools/efi/opening.py",
     "that the amounts are true: one inflated invoice can carry a large part of the total. "
-    "With an aggregated proof, ask by amount (opening.py --point), which asks for large "
-    "invoices most of the time; a credit note made smaller is not caught that way",
+    "With an aggregated proof, ask by amount (opening.py --seed): an invoice is then asked for "
+    "in proportion to its share of the gross positive total, which you do not see; a credit "
+    "note signed again as a smaller one is not found that way",
     "that no invoices exist after the last one, or on other devices of the same taxpayer",
 )
 
@@ -113,12 +119,12 @@ def prove(a):
         k = a.synthetic
         invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(k, None, 1, None)
         if a.context:
-            context = int(a.context, 0)
+            context = agg.parse_context(a.context)
     else:
         if not a.files or len(a.files) % 2:
             sys.exit("give REQUEST.xml RESPONSE.xml for each invoice, in ordinal order")
-        if a.threshold is None or a.year is None:
-            sys.exit("--threshold and --year are required with real files")
+        if a.threshold is None or a.year is None or a.context is None:
+            sys.exit("--threshold, --year and --context (the value the verifier issued) are required with real files")
         invoices, tmods, imods = [], set(), set()
         for req_path, resp_path in zip(a.files[0::2], a.files[1::2]):
             doc, req_sig, tmod = batch_inputs.ingest_request(open(req_path, "rb").read())
@@ -130,7 +136,7 @@ def prove(a):
             sys.exit("the files are not all signed by one taxpayer key and one authority key")
         k, tmod, imod = len(invoices), tmods.pop(), imods.pop()
         threshold = round(float(a.threshold) * 100)
-        context = int(a.context, 0) if a.context else secrets.randbits(120)
+        context = agg.parse_context(a.context)
         year = a.year
     if k not in SIZES:
         os.makedirs(a.out, exist_ok=True)
@@ -170,31 +176,37 @@ def prove(a):
 
 
 def verify(a):
+    # Everything the verifier typed is read before anything is printed: a mistyped argument must
+    # not leave "PROOF VALID" on the screen.
+    expected_context = agg.parse_context(a.context) if a.context else None
+    cert = None
+    if a.taxpayer_cert:
+        cert = keyhash.describe(keyhash.load_cert(a.taxpayer_cert, a.taxpayer_cert.lower().endswith(".xml")))
+    ledger = {}
+    if a.ledger and os.path.exists(a.ledger):
+        with open(a.ledger) as f:
+            ledger = json.load(f)
+
     values = read_values(os.path.join(a.dir, "public_inputs"))
-    if len(values) == 13:
-        try:
-            ok, st, problems, leaf_size = agg.verify(a.dir)
-        except agg.StepFailed as e:
-            sys.exit(f"verification could not run: {e}")
+    kind = agg.kind_of(values)
+    if kind == "aggregate":
+        ok, st, problems, leaf_size = agg.verify(a.dir)
         if not ok:
             print("PROOF INVALID: " + "; ".join(problems))
             return 1
         k = st["invoice_count"]
         circuit_line = f"agg_top over leaves of up to {leaf_size} (all verification keys derived locally)"
-        published = "one root each (see statement.json)"
+        nullifiers = [st["scope_nullifier"]]
+        published = "one scope nullifier, one root over the opening commitments"
     else:
-        st = decode(values)
-        k = st["invoice_count"]
-        circuit = circuit_json(k)
-        with tempfile.TemporaryDirectory() as tmp:
-            run(["bb", "write_vk", "-b", circuit, "-o", tmp, "-t", "evm"], what="deriving the verification key")
-            r = subprocess.run(["bb", "verify", "-k", os.path.join(tmp, "vk"), "-p", os.path.join(a.dir, "proof"),
-                                "-i", os.path.join(a.dir, "public_inputs"), "-t", "evm"], capture_output=True, text=True)
-        if "Proof verified successfully" not in (r.stdout + r.stderr):
+        if not agg.verify_batch(a.dir):
             print("PROOF INVALID")
             return 1
+        st = decode(values)
+        k = st["invoice_count"]
         circuit_line = f"{st['circuit']} (verification key derived locally)"
-        published = f"{k} each (see statement.json)"
+        nullifiers = st["nullifiers"]
+        published = f"{k} nullifier(s), {k} opening commitment(s)"
 
     with open(os.path.join(ROOT, "registry", "issuer_keys.json")) as f:
         keys = {int(e["key_hash"], 16): e for e in json.load(f)["keys"]}
@@ -216,17 +228,26 @@ def verify(a):
         print("                           receipts under this key can be had for invented invoices")
     else:
         print("  authority key          : NOT IN registry/issuer_keys.json - do not rely on this proof")
-    context_ok = a.context is None or int(a.context, 0) == int(st["context"], 16)
+    context_ok = expected_context is None or expected_context == int(st["context"], 16)
     if a.context is None:
         print(f"  context                : {st['context']} (not compared: no --context given)")
     elif context_ok:
         print(f"  context                : {st['context']} (the one expected)")
     else:
         print(f"  context                : {st['context']} - NOT the expected one: this proof was made for another verifier")
-    print(f"  nullifiers / openings  : {published}")
+    print(f"  published              : {published}")
+    seen = set(ledger.get(st["context"], []))
+    repeated = [n for n in nullifiers if n in seen]
+    if not a.ledger:
+        print("  presented before       : not checked (no --ledger given); the nullifiers are:")
+        for n in nullifiers:
+            print(f"                           {n}")
+    elif repeated:
+        print(f"  presented before       : YES - {len(repeated)} nullifier(s) of this proof are already in the ledger")
+    else:
+        print("  presented before       : no (compared with the ledger)")
     cert_ok = True
-    if a.taxpayer_cert:
-        cert = keyhash.describe(keyhash.load_cert(a.taxpayer_cert, a.taxpayer_cert.lower().endswith(".xml")))
+    if cert:
         cert_ok = int(cert["key_hash"], 16) == int(st["taxpayer_key_hash"], 16)
         if cert_ok:
             print(f"  taxpayer               : key matches the certificate of {cert['subject']}")
@@ -238,8 +259,15 @@ def verify(a):
         print(f"    - {line}")
     if not context_ok:
         return 4
+    if repeated:
+        return 5
     if not cert_ok:
         return 3
+    if a.ledger:
+        # Remembered only once nothing above objected to this presentation.
+        ledger[st["context"]] = sorted(seen | set(nullifiers))
+        with open(a.ledger, "w") as f:
+            json.dump(ledger, f, indent=1)
     return 0 if production else 2
 
 
@@ -257,9 +285,13 @@ def main():
     v = sub.add_parser("verify")
     v.add_argument("dir")
     v.add_argument("--context", help="the context this verifier issued (hex); a proof for another one is refused")
+    v.add_argument("--ledger", metavar="FILE", help="remember accepted nullifiers here and refuse a repeat")
     v.add_argument("--taxpayer-cert", help="taxpayer certificate (DER/PEM), or a signed EFI request (.xml)")
     a = ap.parse_args()
-    return prove(a) if a.cmd == "prove" else verify(a)
+    try:
+        return prove(a) if a.cmd == "prove" else verify(a)
+    except agg.StepFailed as e:
+        sys.exit(f"error: {e}")
 
 
 if __name__ == "__main__":

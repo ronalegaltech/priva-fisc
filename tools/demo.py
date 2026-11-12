@@ -68,14 +68,14 @@ def presentation(k, n, inflate):
               f"numbered without a gap from 1,")
         print(f"                                  no receipt used twice, total at least {euros(st['threshold_cents'])}")
 
+        seed = opening.new_seed()  # the verifier's; it fixes the points asked for by amount
         asked = [("the first invoice", {"index": 0}, {"edge": "first"})]
-        for _ in range(DRAWS):
-            draw = secrets.randbits(64)
-            asked.append(("an invoice by amount", {"point": draw}, {"point": draw}))
+        for number in range(1, DRAWS + 1):
+            asked.append(("an invoice by amount", {"seed": seed, "draw": number}, {"seed": seed, "draw": number}))
         accepted, differing = True, 0
         for what, reveal, check in asked:
             o = opening.reveal_from_record(record, **reveal)
-            good = opening.check_against_proof(o, proof_dir, **check)
+            good = opening.check_against_proof(o, proof_dir, verified=True, **check)
             differences = opening.differences(o, on_record.get(o["iic"].lower(), {}))
             accepted &= good
             differing += bool(differences)
