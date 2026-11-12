@@ -1,23 +1,32 @@
-//! PRIVA-FISC registry - the shared state that a proof alone cannot give.
+//! PRIVA-FISC registry: the shared state that a proof alone cannot give.
 //!
-//! A batch proof (see noir/pf_efi/src/batch.nr) is checked by the Garaga-generated verifier. This
-//! contract adds the two things that need a common ledger:
-//!   * an issuer-key registry: a proof counts only if the authority key it was checked against is
-//!     one the registry owner has listed;
-//!   * a nullifier ledger: each invoice in a batch publishes a context-bound nullifier, and a batch
-//!     is refused if any of its nullifiers was seen before (the same invoices cannot be presented
-//!     twice in the same context).
+//! Proofs are checked by Garaga-generated verifiers. This contract adds what needs a common ledger:
+//!   * an issuer-key list: a proof counts only if the authority key it was checked against is one
+//!     the registry owner has listed;
+//!   * a nullifier ledger: a presentation is refused if a nullifier it publishes was seen before,
+//!     so the same invoices cannot be presented twice in the same context.
 //!
-//! It records WHAT WAS PROVED, never invoice data. What a batch proof does not prove (that the
-//! authority saw the invoice content, completeness beyond the batch) is not cured here either.
+//! Two kinds of proof are accepted:
+//!   * a batch of 10 invoices (noir/batch_k10), one nullifier per invoice;
+//!   * an aggregate of 20 invoices (noir/agg_root_k10_b2), one scope nullifier for the whole run.
+//!     The aggregate proof names the leaf circuit it was built from; it is accepted only if that is
+//!     the leaf circuit this registry was deployed with.
+//!
+//! It records WHAT WAS PROVED, never invoice data. What a proof does not prove (that the authority
+//! saw the invoice content, completeness beyond the run) is not cured here either.
 
 use starknet::{ClassHash, ContractAddress};
 
-/// Number of invoices in the batch circuit this registry accepts.
+/// Invoices in a batch proof, and its public values in order: threshold, context, year, taxpayer
+/// key hash, issuer key hash, starts-at-one, BATCH_SIZE nullifiers, BATCH_SIZE opening commitments.
 pub const BATCH_SIZE: u32 = 10;
-/// Public values of the batch circuit, in order: threshold, context, year, taxpayer key hash,
-/// issuer key hash, starts-at-one, BATCH_SIZE nullifiers, BATCH_SIZE opening commitments.
-pub const PUBLIC_VALUES: u32 = 26;
+pub const BATCH_PUBLIC_VALUES: u32 = 26;
+
+/// Invoices in an aggregate proof, and its public values in order: threshold, context, year, leaf
+/// circuit key hash, taxpayer key hash, issuer key hash, starts-at-one, nullifier-chain root,
+/// opening-chain root, scope nullifier.
+pub const AGGREGATE_SIZE: u32 = 20;
+pub const AGGREGATE_PUBLIC_VALUES: u32 = 10;
 
 #[derive(Copy, Drop, Serde, starknet::Store, PartialEq, Debug)]
 pub struct Attestation {
@@ -28,6 +37,7 @@ pub struct Attestation {
     pub threshold_cents: u64,
     pub invoice_count: u32,
     pub starts_at_one: bool,
+    pub aggregated: bool,
     pub submitted_by: ContractAddress,
 }
 
@@ -40,14 +50,20 @@ pub trait IPrivaFiscRegistry<TContractState> {
     /// Verifies a 10-invoice batch proof, checks the issuer key and the nullifiers, records the
     /// attestation and returns its id. Reverts on any failure.
     fn attest_batch(ref self: TContractState, full_proof_with_hints: Span<felt252>) -> u64;
+    /// Same for a 20-invoice aggregate proof.
+    fn attest_aggregate(ref self: TContractState, full_proof_with_hints: Span<felt252>) -> u64;
     fn get_attestation(self: @TContractState, id: u64) -> Attestation;
     fn attestation_count(self: @TContractState) -> u64;
     fn owner(self: @TContractState) -> ContractAddress;
-    fn verifier_class_hash(self: @TContractState) -> ClassHash;
+    fn batch_verifier(self: @TContractState) -> ClassHash;
+    fn aggregate_verifier(self: @TContractState) -> ClassHash;
+    fn leaf_vk_hash(self: @TContractState) -> u256;
 }
 
 #[starknet::contract]
 pub mod PrivaFiscRegistry {
+    // Both generated verifiers expose the same entry point, so one dispatcher type serves both;
+    // the class hash decides which verifier runs.
     use pf_batch_k10_verifier::honk_verifier::{
         IUltraKeccakZKHonkVerifierDispatcherTrait, IUltraKeccakZKHonkVerifierLibraryDispatcher,
     };
@@ -56,12 +72,16 @@ pub mod PrivaFiscRegistry {
         StoragePointerWriteAccess,
     };
     use starknet::{ClassHash, ContractAddress, get_caller_address};
-    use super::{Attestation, BATCH_SIZE, PUBLIC_VALUES};
+    use super::{
+        AGGREGATE_PUBLIC_VALUES, AGGREGATE_SIZE, Attestation, BATCH_PUBLIC_VALUES, BATCH_SIZE,
+    };
 
     #[storage]
     struct Storage {
         owner: ContractAddress,
-        verifier_class_hash: ClassHash,
+        batch_verifier: ClassHash,
+        aggregate_verifier: ClassHash,
+        leaf_vk_hash: u256,
         issuer_keys: Map<u256, bool>,
         nullifiers: Map<u256, bool>,
         attestations: Map<u64, Attestation>,
@@ -73,6 +93,7 @@ pub mod PrivaFiscRegistry {
     pub enum Event {
         IssuerKeySet: IssuerKeySet,
         BatchAttested: BatchAttested,
+        AggregateAttested: AggregateAttested,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -98,10 +119,60 @@ pub mod PrivaFiscRegistry {
         pub openings: Span<u256>,
     }
 
+    #[derive(Drop, starknet::Event)]
+    pub struct AggregateAttested {
+        #[key]
+        pub id: u64,
+        #[key]
+        pub context: u256,
+        pub taxpayer_key_hash: u256,
+        pub issuer_key_hash: u256,
+        pub year: u32,
+        pub threshold_cents: u64,
+        pub invoice_count: u32,
+        pub starts_at_one: bool,
+        pub nullifier_root: u256,
+        pub opening_root: u256,
+    }
+
     #[constructor]
-    fn constructor(ref self: ContractState, owner: ContractAddress, verifier_class_hash: ClassHash) {
+    fn constructor(
+        ref self: ContractState,
+        owner: ContractAddress,
+        batch_verifier: ClassHash,
+        aggregate_verifier: ClassHash,
+        leaf_vk_hash: u256,
+    ) {
         self.owner.write(owner);
-        self.verifier_class_hash.write(verifier_class_hash);
+        self.batch_verifier.write(batch_verifier);
+        self.aggregate_verifier.write(aggregate_verifier);
+        self.leaf_vk_hash.write(leaf_vk_hash);
+    }
+
+    #[generate_trait]
+    impl Internal of InternalTrait {
+        fn verified_values(
+            self: @ContractState, verifier: ClassHash, proof: Span<felt252>, expected_len: u32,
+        ) -> Span<u256> {
+            let result = IUltraKeccakZKHonkVerifierLibraryDispatcher { class_hash: verifier }
+                .verify_ultra_keccak_zk_honk_proof(proof);
+            assert(result.is_ok(), 'proof invalid');
+            let values = result.unwrap();
+            assert(values.len() == expected_len, 'unexpected public values');
+            values
+        }
+
+        fn use_nullifier(ref self: ContractState, nullifier: u256) {
+            assert(!self.nullifiers.read(nullifier), 'invoice already presented');
+            self.nullifiers.write(nullifier, true);
+        }
+
+        fn record(ref self: ContractState, attestation: Attestation) -> u64 {
+            let id = self.attestation_count.read() + 1;
+            self.attestation_count.write(id);
+            self.attestations.write(id, attestation);
+            id
+        }
     }
 
     #[abi(embed_v0)]
@@ -121,15 +192,8 @@ pub mod PrivaFiscRegistry {
         }
 
         fn attest_batch(ref self: ContractState, full_proof_with_hints: Span<felt252>) -> u64 {
-            // 1. The proof itself.
-            let verifier = IUltraKeccakZKHonkVerifierLibraryDispatcher {
-                class_hash: self.verifier_class_hash.read(),
-            };
-            let result = verifier.verify_ultra_keccak_zk_honk_proof(full_proof_with_hints);
-            assert(result.is_ok(), 'proof invalid');
-            let values = result.unwrap();
-            assert(values.len() == PUBLIC_VALUES, 'unexpected public values');
-
+            let values = self
+                .verified_values(self.batch_verifier.read(), full_proof_with_hints, BATCH_PUBLIC_VALUES);
             let threshold_cents: u64 = (*values.at(0)).try_into().expect('threshold out of range');
             let context = *values.at(1);
             let year: u32 = (*values.at(2)).try_into().expect('year out of range');
@@ -137,25 +201,15 @@ pub mod PrivaFiscRegistry {
             let issuer_key_hash = *values.at(4);
             let starts_at_one = *values.at(5) == 1;
 
-            // 2. The authority key must be a listed one.
             assert(self.issuer_keys.read(issuer_key_hash), 'issuer key not registered');
-
-            // 3. No invoice may have been presented before in this context.
             let mut i: u32 = 0;
             while i != BATCH_SIZE {
-                let nullifier = *values.at(6 + i);
-                assert(!self.nullifiers.read(nullifier), 'invoice already presented');
-                self.nullifiers.write(nullifier, true);
+                self.use_nullifier(*values.at(6 + i));
                 i += 1;
             }
 
-            // 4. Record what was proved.
-            let id = self.attestation_count.read() + 1;
-            self.attestation_count.write(id);
-            self
-                .attestations
-                .write(
-                    id,
+            let id = self
+                .record(
                     Attestation {
                         context,
                         taxpayer_key_hash,
@@ -164,6 +218,7 @@ pub mod PrivaFiscRegistry {
                         threshold_cents,
                         invoice_count: BATCH_SIZE,
                         starts_at_one,
+                        aggregated: false,
                         submitted_by: get_caller_address(),
                     },
                 );
@@ -184,6 +239,59 @@ pub mod PrivaFiscRegistry {
             id
         }
 
+        fn attest_aggregate(ref self: ContractState, full_proof_with_hints: Span<felt252>) -> u64 {
+            let values = self
+                .verified_values(
+                    self.aggregate_verifier.read(), full_proof_with_hints, AGGREGATE_PUBLIC_VALUES,
+                );
+            let threshold_cents: u64 = (*values.at(0)).try_into().expect('threshold out of range');
+            let context = *values.at(1);
+            let year: u32 = (*values.at(2)).try_into().expect('year out of range');
+            let leaf_vk_hash = *values.at(3);
+            let taxpayer_key_hash = *values.at(4);
+            let issuer_key_hash = *values.at(5);
+            let starts_at_one = *values.at(6) == 1;
+            let nullifier_root = *values.at(7);
+            let opening_root = *values.at(8);
+            let scope_nullifier = *values.at(9);
+
+            // The root proof only says "proofs of the circuit with this key hash verified".
+            assert(leaf_vk_hash == self.leaf_vk_hash.read(), 'unknown leaf circuit');
+            assert(self.issuer_keys.read(issuer_key_hash), 'issuer key not registered');
+            self.use_nullifier(scope_nullifier);
+
+            let id = self
+                .record(
+                    Attestation {
+                        context,
+                        taxpayer_key_hash,
+                        issuer_key_hash,
+                        year,
+                        threshold_cents,
+                        invoice_count: AGGREGATE_SIZE,
+                        starts_at_one,
+                        aggregated: true,
+                        submitted_by: get_caller_address(),
+                    },
+                );
+            self
+                .emit(
+                    AggregateAttested {
+                        id,
+                        context,
+                        taxpayer_key_hash,
+                        issuer_key_hash,
+                        year,
+                        threshold_cents,
+                        invoice_count: AGGREGATE_SIZE,
+                        starts_at_one,
+                        nullifier_root,
+                        opening_root,
+                    },
+                );
+            id
+        }
+
         fn get_attestation(self: @ContractState, id: u64) -> Attestation {
             self.attestations.read(id)
         }
@@ -196,8 +304,16 @@ pub mod PrivaFiscRegistry {
             self.owner.read()
         }
 
-        fn verifier_class_hash(self: @ContractState) -> ClassHash {
-            self.verifier_class_hash.read()
+        fn batch_verifier(self: @ContractState) -> ClassHash {
+            self.batch_verifier.read()
+        }
+
+        fn aggregate_verifier(self: @ContractState) -> ClassHash {
+            self.aggregate_verifier.read()
+        }
+
+        fn leaf_vk_hash(self: @ContractState) -> u256 {
+            self.leaf_vk_hash.read()
         }
     }
 }

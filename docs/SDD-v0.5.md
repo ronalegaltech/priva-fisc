@@ -60,8 +60,8 @@ Saldırgan kanıtı üreten mükelleftir. Doğrulayıcı (banka, faktoring şirk
 | kanıt üretimi | Kanıtı çıkar | `tools/pf.py prove` -> Barretenberg 6.0.0, `-t evm` (gizlilik kipi); tanık dosyaları silinir | Mükellefin makinesi | Çalışıyor |
 | agg-orchestrator | Büyük kümeleri parçalayıp birleştir | Noir özyineleme: yaprak `agg_leaf_*`, kök `pf_agg` + `agg_root_*`; `tools/efi/agg.py` | Mükellefin makinesi | İki yaprak -> bir kök çalışıyor; daha derin ağaç yazılmadı |
 | verifier-offline | Kanıtı zincirsiz doğrula | `tools/pf.py verify`: doğrulama anahtarını depodaki devreden kendisi türetir, kanıtı denetler, idare anahtarını `registry/issuer_keys.json` içinde arar | Doğrulayıcının makinesi | Çalışıyor |
-| verifier-onchain | Kanıtı Starknet'te doğrula | Garaga'nın ürettiği Cairo sözleşmesi (`starknet/pf_batch_k10_verifier`) | Starknet | Yerel Starknet ağında gerçek işlemle çalışıyor; Sepolia'ya yüklenmedi |
-| status-contract | Nullifier defteri, idare anahtar kaydı, kanıtlananın kaydı | Cairo (`starknet/pf_registry`) | Starknet | Testler 6/6; yerel Starknet ağında uçtan uca çalışıyor (`tools/starknet/devnet_demo.sh`); Sepolia'ya yüklenmedi |
+| verifier-onchain | Kanıtı Starknet'te doğrula | Garaga'nın ürettiği iki Cairo sözleşmesi: 10'luk kanıt için `pf_batch_k10_verifier`, 20'lik birleştirilmiş kanıt için `pf_agg_root_k10_b2_verifier` | Starknet | Yerel Starknet ağında gerçek işlemle çalışıyor; Sepolia'ya yüklenmedi |
+| status-contract | Nullifier defteri, idare anahtar kaydı, kanıtlananın kaydı; iki kanıt türünü de kabul eder, birleştirilmiş kanıtta yaprak devresinin özetini kendi kaydıyla karşılaştırır | Cairo (`starknet/pf_registry`) | Starknet | Testler 11/11; yerel Starknet ağında uçtan uca çalışıyor (`tools/starknet/devnet_demo.sh`); Sepolia'ya yüklenmedi |
 | anahtar kaydı | İdare sertifikasından anahtar özeti | `tools/efi/keyhash.py` + Noir `rsa_key_hash`; `registry/issuer_keys.json` | Herkes hesaplayabilir | Çalışıyor; kayıtta yalnız 2021 test sertifikası var |
 | örnek açtırma | Seçilen faturayı aç ve karşılaştır | Noir `open_invoice` + `tools/efi/opening.py` | Doğrulayıcı ile mükellef arasında | Açma ve taahhüt denetimi çalışıyor; idare servisiyle karşılaştırma adımı araca bağlanmadı |
 
@@ -97,9 +97,9 @@ Tek devreye sığmayan kümeler sıra numarasına göre 10'luk yapraklara bölü
 | Mükellef isteği tek başına (≤4096 bayt) | 470.491 | ~3 sn | 1,1 GB | 9,9 KB | ölçülmedi |
 | 1 fatura uçtan uca, gerçek 2021 test çifti | 417.256 | 5,0 sn | 0,9 GB | 9,9 KB | geçti, ~186 M l2_gas |
 | 10 fatura tek kanıt (sentetik zincir) | 4.086.980 | 22,6 sn | 6,6 GB | 11,1 KB | geçti, ~198 M l2_gas |
-| 20 fatura: iki 10'luk yaprak + kök (sentetik zincir) | yaprak 4.088.059, kök 1.470.543 | uçtan uca 99 sn | 4,0 GB | 10,7 KB | ölçülmedi |
+| 20 fatura: iki 10'luk yaprak + kök (sentetik zincir) | yaprak 4.088.059, kök 1.470.543 | uçtan uca 99 sn | 4,0 GB | 10,7 KB | geçti |
 
-10 faturalık devre 2^22 = 4.194.304 kapı sınırının %2,6 altındadır; sınır aşılırsa süre ve bellek ikiye katlanır, bu yüzden istek boyu (2048 bayt) ve etiket penceresi (1280 bayt) bu devrede sabit tutulur. Devrenin derlenmesi yaklaşık 4 dakika, tanık üretimi 7 saniye sürer. Yerel Starknet ağında (starknet-devnet 0.10.1) gerçek bir işlem olarak sunulan 10'luk kanıt kabul edildi: 864 M l2_gas, ağın varsayılan fiyatıyla 0,86 STRK; aynı kanıtın ikinci sunumu "invoice already presented" ile reddedildi. Bu tek işlem büyüktür; Sepolia'daki işlem başına gaz sınırına sığıp sığmadığı ve gerçek ücret ölçülmedi, sığmazsa doğrulama ile kayıt iki işleme bölünür.
+10 faturalık devre 2^22 = 4.194.304 kapı sınırının %2,6 altındadır; sınır aşılırsa süre ve bellek ikiye katlanır, bu yüzden istek boyu (2048 bayt) ve etiket penceresi (1280 bayt) bu devrede sabit tutulur. Devrenin derlenmesi yaklaşık 4 dakika, tanık üretimi 7 saniye sürer. Yerel Starknet ağında (starknet-devnet 0.10.1) iki kanıt da gerçek birer işlemle sunuldu ve kabul edildi: 10'luk kanıt 863 M, 20'lik birleştirilmiş kanıt 820 M L2 gaz (ağın varsayılan fiyatıyla 0,86 ve 0,82 STRK). Birleştirilmiş kanıtın zincir maliyeti fatura sayısıyla artmaz. Starknet belgelerindeki işlem başına sınır 1,11 milyar L2 gazdır; iki işlem de bunun altındadır. İkisinin de ikinci sunumu "invoice already presented" ile reddedildi. Açık ağda ölçüm yapılmadı.
 
 ## 5. Veri akışı
 
@@ -127,7 +127,7 @@ Tek devreye sığmayan kümeler sıra numarasına göre 10'luk yapraklara bölü
 - **Üretim sertifikası bilinmiyor.** Eldeki gerçek örnek 2021 test ortamından. Güncel idare sertifikası ve bir üretim çifti gerekiyor; test ortamına kendi erişimimiz için başvuru yapıldı.
 - **Okunamayan biçimler:** saat dilimi "Z" ile biten tarihler, başlığında SubseqDelivType olan istekler, 2048 bayttan uzun istekler (ayar), 1280 bayttan uzun `<Invoice` etiketi. Bunlarda kanıt üretilemez; yanlış kanıt çıkmaz.
 - **Henüz okunmayan alanlar:** satıcı vergi numarası, fatura tipi, düzeltme faturasının hangi faturayı düzelttiği.
-- **Ölçek:** bugün çalışan en büyük küme 20 faturadır (iki yaprak, bir kök; 4.5). Bir yaprak kanıtını kök içinde doğrulamak yaklaşık 0,70 milyon kapı tutar, bu yüzden tek kök en çok beş yaprağı (50 fatura) kaldırır. Daha büyük kümeler için kökün kendi türünden kanıtları da doğrulayabildiği çok katlı ağaç ve sıralı listenin de parçalanması gerekir; yazılmadı. Kaba hesap: 100 fatura birkaç dakika, 10.000 fatura bu dizüstünde art arda 10 saatin üzerinde (paralelleştirilebilir, fatura kesildikçe de üretilebilir). Not: iç kanıt denetimi tanık üretiminde değil kanıt üretiminde yapılır; birleştirme testleri bu yüzden hep kanıt üretip doğrular.
+- **Ölçek:** bugün çalışan en büyük küme 20 faturadır (iki yaprak, bir kök; 4.5), zincir tarafı dahil. Bir yaprak kanıtını kök içinde doğrulamak yaklaşık 0,70 milyon kapı tutar, bu yüzden tek kök en çok beş yaprağı (50 fatura) kaldırır. Daha büyük kümeler için kökün kendi türünden kanıtları da doğrulayabildiği çok katlı ağaç ve sıralı listenin de parçalanması gerekir; yazılmadı. Kaba hesap: 100 fatura birkaç dakika, 10.000 fatura bu dizüstünde art arda 10 saatin üzerinde (paralelleştirilebilir, fatura kesildikçe de üretilebilir). Not: iç kanıt denetimi tanık üretiminde değil kanıt üretiminde yapılır; birleştirme testleri bu yüzden hep kanıt üretip doğrular.
 - **Portaldan kesilen faturalar:** idarenin kendi portalından kesilen faturalarda mükellefin elinde imzalı dosya oluşmaz; bu faturalar kapsam dışıdır.
 - **Denetim:** devreler ve kullanılan kütüphaneler bağımsız incelemeden geçmedi.
 
@@ -146,15 +146,15 @@ Depoda yalnız sentetik veri vardır; gerçek örneklerle denemeler depo dışı
 | Örnek açtırma | Doğru açma eşleşir; tutarı, sırayı ya da FIC'i değiştirilmiş açma eşleşmez | 4/4 |
 | Birleştirme (1'lik yapraklar) | Kanıt üreterek: geçerli; yanıtın iki yaprakta kullanımı; bunu sahte sıralı listeyle gizleme; yapraklar arası boşluk; başka cihaz; eşik altı; başka denetim değeriyle kanıtlanmış yaprak; sonradan değiştirilmiş özet; yanlış yaprak devresi özeti | 9/9 |
 | Birleştirme (10'luk yapraklar) | Kanıt üreterek: geçerli 20 fatura; yanıtın iki yaprakta kullanımı; sahte sıralı liste | 3/3 |
-| Starknet defteri | Gerçek 10 faturalık kanıtla: kayıt, aynı faturaların ikinci sunumu, kayıtsız/kaldırılmış idare anahtarı, yalnız sahip anahtar ekler, değiştirilmiş kanıt | 6/6 |
-| Yerel ağda uçtan uca | Yükle -> kur -> idare anahtarını kaydet -> 10'luk kanıtı sun -> kaydı oku -> aynı kanıtı yeniden sun (reddedilir); tek komut, 51 sn | geçti |
+| Starknet defteri | Gerçek 10'luk ve 20'lik kanıtlarla: kayıt, ikinci sunum, kayıtsız ya da kaldırılmış idare anahtarı, yalnız sahip anahtar ekler, değiştirilmiş kanıt, 20'lik kanıtın 10'luk girişinden sunulması, tanınmayan yaprak devresi | 11/11 |
+| Yerel ağda uçtan uca | Sözleşmeleri yükle ve kur; 10'luk ve 20'lik kanıt için: idare anahtarını kaydet, kanıtı sun, kaydı oku, aynı kanıtı yeniden sun (reddedilir). Tek komut, yaklaşık 3 dakika | geçti |
 | Uçtan uca araç | Gerçek 2021 çiftinde `prove` -> `verify`: geçerli, idare anahtarı kayıtlı; sentetik 10'lukta geçerli ama "anahtar kayıtsız" uyarısı; değiştirilmiş açık değerde geçersiz | elle koşuldu |
 
 ## 9. Sıradaki adımlar
 
-1. Doğrulayıcı ve defter sözleşmesini Starknet Sepolia'ya yüklemek ve tek işlemin gaz sınırına sığıp sığmadığını ölçmek.
+1. Doğrulayıcıları ve defter sözleşmesini Starknet Sepolia'ya yüklemek ve gerçek ücreti ölçmek.
 2. Test ortamından kendi kestiğimiz 10 ardışık gerçek faturayla demo.
 3. Örnek açtırmada idarenin kamu servisiyle karşılaştırma adımı.
 4. Eksik alanlar ve biçimler (Bölüm 7).
-5. 50'den büyük kümeler için çok katlı ağaç; birleştirilmiş kanıtın Starknet doğrulayıcısı.
+5. 50'den büyük kümeler için çok katlı ağaç.
 6. Bağımsız inceleme.

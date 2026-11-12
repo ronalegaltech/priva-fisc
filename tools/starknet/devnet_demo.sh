@@ -4,10 +4,10 @@
 #
 #   . tools/toolchain.env && sh tools/starknet/devnet_demo.sh
 #
-# Steps: start a fresh local network -> declare the ECIP helper, the generated verifier and the
-# registry -> deploy the registry -> list the authority key -> submit a 10-invoice proof ->
-# read back what was recorded -> submit the same proof again (must be refused).
-# The invoices are invented and signed by throw-away keys.
+# Steps: start a fresh local network -> declare the ECIP helper, both verifiers and the registry ->
+# deploy the registry -> for a 10-invoice batch proof and then a 20-invoice aggregate proof: list
+# the authority key, submit the proof, read back what was recorded, submit it again (must be
+# refused). The invoices are invented and signed by throw-away keys.
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PORT="${PF_DEVNET_PORT:-5055}"
@@ -26,45 +26,61 @@ KEY="$(printf '%s' "$ACC" | python3 -c 'import sys,json; print(json.load(sys.std
 SN="sncast --accounts-file $ACCOUNTS --account demo"
 sncast --accounts-file "$ACCOUNTS" account import --name demo --address "$ADDR" --private-key "$KEY" --type oz --url "$URL" --silent >/dev/null 2>&1
 
-cd "$ROOT/starknet/pf_registry"
-declare_class() { $SN declare --url "$URL" --contract-name "$1" 2>&1 | sed -n 's/^Class Hash: *//p'; }
-echo "1/6 declaring contracts on the local network ..."
-ECIP="$(declare_class UniversalECIP)"; VERIFIER="$(declare_class UltraKeccakZKHonkVerifier)"; REGISTRY="$(declare_class PrivaFiscRegistry)"
-[ -n "$ECIP" ] && [ -n "$VERIFIER" ] && [ -n "$REGISTRY" ] || { echo "declare failed"; exit 1; }
-echo "2/6 deploying the registry ..."
-CONTRACT="$($SN deploy --url "$URL" --class-hash "$REGISTRY" --constructor-calldata "$ADDR" "$VERIFIER" 2>&1 | sed -n 's/^Contract Address: *//p')"
-[ -n "$CONTRACT" ] || { echo "deploy failed"; exit 1; }
-
-echo "3/6 proving 10 invented invoices ..."
-python3 "$ROOT/tools/pf.py" prove --synthetic 10 --out "$WORK/proof" >/dev/null
-bb write_vk -b "$ROOT/noir/batch_k10/target/batch_k10.json" -o "$WORK/vk" -t evm >/dev/null 2>&1
-( cd "$WORK" && "$PF_GARAGA" calldata --system ultra_keccak_zk_honk --proof "$WORK/proof/proof" --vk "$WORK/vk/vk" \
-    --public-inputs "$WORK/proof/public_inputs" --format starkli >"$WORK/calldata.txt" 2>/dev/null )
-KEYHASH="$(python3 -c 'import json,sys; v=int(json.load(open(sys.argv[1]))["issuer_key_hash"],16); print(hex(v & ((1<<128)-1)), hex(v>>128))' "$WORK/proof/statement.json")"
-
-echo "4/6 listing the authority key and submitting the proof ..."
-# shellcheck disable=SC2086
-$SN invoke --url "$URL" --contract-address "$CONTRACT" --function set_issuer_key --calldata $KEYHASH 1 >/dev/null 2>&1
-# shellcheck disable=SC2046
-TX="$($SN invoke --url "$URL" --contract-address "$CONTRACT" --function attest_batch --calldata $(cat "$WORK/calldata.txt") 2>&1 | sed -n 's/^Transaction Hash: *//p')"
-[ -n "$TX" ] || { echo "submission failed"; exit 1; }
-rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"starknet_getTransactionReceipt\",\"params\":[\"$TX\"]}" | python3 -c '
+# u256 of a 32-byte big-endian file or of a hex string, as "low high"
+u256_of_file() { python3 -c 'import sys; v=int.from_bytes(open(sys.argv[1],"rb").read(),"big"); print(hex(v & ((1<<128)-1)), hex(v>>128))' "$1"; }
+u256_of_key() { python3 -c 'import json,sys; v=int(json.load(open(sys.argv[1]))["issuer_key_hash"],16); print(hex(v & ((1<<128)-1)), hex(v>>128))' "$1"; }
+receipt() {
+    rpc "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"starknet_getTransactionReceipt\",\"params\":[\"$1\"]}" | python3 -c '
 import sys,json
 r=json.load(sys.stdin)["result"]
 print("    execution: %s, l2_gas: %s, fee at local default price: %.3f STRK" % (r["execution_status"], r["execution_resources"]["l2_gas"], int(r["actual_fee"]["amount"],16)/1e18))
 sys.exit(0 if r["execution_status"]=="SUCCEEDED" else 1)'
-
-echo "5/6 what the registry recorded:"
-$SN call --url "$URL" --contract-address "$CONTRACT" --function attestation_count 2>&1 | sed -n 's/^Response: */    attestations: /p'
-$SN call --url "$URL" --contract-address "$CONTRACT" --function get_attestation --calldata 1 2>&1 | sed -n 's/^Response: */    /p' | cut -c1-110
-
-echo "6/6 submitting the same proof again ..."
+}
 REASON="$(python3 -c 'print(b"invoice already presented".hex())')"
-# shellcheck disable=SC2046
-if $SN invoke --url "$URL" --contract-address "$CONTRACT" --function attest_batch --calldata $(cat "$WORK/calldata.txt") 2>&1 | grep -q -e "$REASON" -e "invoice already presented"; then
-    echo "    refused: invoice already presented"
-else
-    echo "    NOT refused as expected"; exit 1
-fi
+
+cd "$ROOT/starknet/pf_registry"
+declare_class() { $SN declare --url "$URL" --contract-name "$1" 2>&1 | sed -n 's/^Class Hash: *//p'; }
+echo "1/5 declaring contracts on the local network ..."
+ECIP="$(declare_class UniversalECIP)"; BATCH_V="$(declare_class PfBatchK10Verifier)"
+AGG_V="$(declare_class PfAggRootVerifier)"; REGISTRY="$(declare_class PrivaFiscRegistry)"
+[ -n "$ECIP" ] && [ -n "$BATCH_V" ] && [ -n "$AGG_V" ] && [ -n "$REGISTRY" ] || { echo "declare failed"; exit 1; }
+
+echo "2/5 deploying the registry (it is told which leaf circuit aggregate proofs must come from) ..."
+bb write_vk -b "$ROOT/noir/agg_leaf_k10/target/agg_leaf_k10.json" -o "$WORK/leaf_vk" -t noir-recursive >/dev/null 2>&1
+LEAF="$(u256_of_file "$WORK/leaf_vk/vk_hash")"
+# shellcheck disable=SC2086
+CONTRACT="$($SN deploy --url "$URL" --class-hash "$REGISTRY" --constructor-calldata "$ADDR" "$BATCH_V" "$AGG_V" $LEAF 2>&1 | sed -n 's/^Contract Address: *//p')"
+[ -n "$CONTRACT" ] || { echo "deploy failed"; exit 1; }
+
+# present KIND(function) CIRCUIT_JSON PROOF_DIR LABEL
+present() {
+    bb write_vk -b "$2" -o "$WORK/vk_$1" -t evm >/dev/null 2>&1
+    mkdir -p "$WORK/cd_$1"
+    ( cd "$WORK/cd_$1" && "$PF_GARAGA" calldata --system ultra_keccak_zk_honk --proof "$3/proof" --vk "$WORK/vk_$1/vk" \
+        --public-inputs "$3/public_inputs" --format starkli >"$WORK/cd_$1/calldata.txt" 2>/dev/null )
+    # shellcheck disable=SC2046
+    $SN invoke --url "$URL" --contract-address "$CONTRACT" --function set_issuer_key --calldata $(u256_of_key "$3/statement.json") 1 >/dev/null 2>&1
+    # shellcheck disable=SC2046
+    TX="$($SN invoke --url "$URL" --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_$1/calldata.txt") 2>&1 | sed -n 's/^Transaction Hash: *//p')"
+    [ -n "$TX" ] || { echo "    submission failed"; exit 1; }
+    receipt "$TX"
+    # shellcheck disable=SC2046
+    if $SN invoke --url "$URL" --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_$1/calldata.txt") 2>&1 | grep -q -e "$REASON" -e "invoice already presented"; then
+        echo "    same $4 again: refused (invoice already presented)"
+    else
+        echo "    same $4 again: NOT refused as expected"; exit 1
+    fi
+}
+
+echo "3/5 batch of 10 invented invoices: prove, list the authority key, submit ..."
+python3 "$ROOT/tools/pf.py" prove --synthetic 10 --out "$WORK/batch" >/dev/null
+present attest_batch "$ROOT/noir/batch_k10/target/batch_k10.json" "$WORK/batch" batch
+
+echo "4/5 aggregate of 20 invented invoices: prove two leaves and a root, list the key, submit ..."
+python3 "$ROOT/tools/efi/agg.py" prove --k 10 --synthetic --out "$WORK/agg" >/dev/null
+present attest_aggregate "$ROOT/noir/agg_root_k10_b2/target/agg_root_k10_b2.json" "$WORK/agg" aggregate
+
+echo "5/5 what the registry recorded:"
 COUNT="$($SN call --url "$URL" --contract-address "$CONTRACT" --function attestation_count 2>&1 | sed -n 's/^Response: *//p')"
-[ "$COUNT" = "1_u64" ] && echo "done: one attestation recorded, replay refused" || { echo "unexpected attestation count $COUNT"; exit 1; }
+echo "    attestations: $COUNT"
+[ "$COUNT" = "2_u64" ] && echo "done: two attestations recorded (10 and 20 invoices), both replays refused" || { echo "unexpected attestation count"; exit 1; }

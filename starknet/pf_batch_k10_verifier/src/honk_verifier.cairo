@@ -17,7 +17,7 @@ pub trait IUltraKeccakZKHonkVerifier<TContractState> {
 }
 
 #[starknet::contract]
-mod UltraKeccakZKHonkVerifier {
+mod PfBatchK10Verifier {
     use core::num::traits::Zero;
     use garaga::apps::noir::zk_honk_transcript::{
         KeccakHasherState, Point256IntoCircuitPoint, ZKHonkTranscriptTrait,
