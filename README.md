@@ -165,6 +165,7 @@ Apple M3, 16 GB.
 | 13 invoices (10 + 3) | same circuits, one node of 1.47M | 104 s in total | 4 to 6 GB per leaf | 10.7 KB |
 | 25 invoices (10 + 10 + 5) | same circuits, two nodes | 148 s in total | 4 to 6 GB per leaf | 10.7 KB |
 | 100 invoices (10 leaves) | same circuits, nine nodes | 426 s in total | 4 to 6 GB per leaf | 10.7 KB |
+| 1,000 invoices (100 leaves) | same circuits, 99 nodes | 4,043 s in total (67 minutes) | 5.3 GB at most | 10.7 KB |
 | one spot-check opening | 8,387 | about 1 s | under 0.1 GB | 17 KB file |
 
 An aggregate costs about 40 s more for every further leaf of 10 (times vary by a tenth from run to
@@ -184,7 +185,8 @@ has been deployed to a public network.
   from the invoice on purpose: it is a field the taxpayer writes, while the signing certificate
   carries the same identity vouched for by the certificate authority.
 - An aggregate holds up to 4,096 invoices (the capacity of the sorted-list circuit). At the speed
-  measured above that is several hours on a laptop; nothing above 100 invoices has been run.
+  measured above that is between four and five hours on a laptop; nothing above 1,000 invoices
+  has been run.
 - The only real authority key in the registry is the 2020 test-environment signer. Receipts from
   a test environment can be had for invented invoices, so `verify` does not treat it as a
   production key.
