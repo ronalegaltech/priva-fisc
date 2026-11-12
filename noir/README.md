@@ -34,8 +34,25 @@ request identifier and the start of `<Invoice` at fixed offsets. The start tag i
 tracking "inside a quoted value" and "tag still open". An attribute counts only where ` Name="`
 starts outside a quoted value, and each wanted attribute must appear exactly once. Canonical XML
 never leaves a raw `"` inside a value, so text typed into a free-text field cannot pass for an
-attribute. A single quote outside a value is refused, which keeps this scan and an XML parser
-reading the same bytes in step.
+attribute. Refused outside a value, because canonical XML never has them there and an XML parser
+could read them differently from this scan: a single quote, a tab or line break, and a namespace
+declaration on `<Invoice>`. The document must end with its two closing tags. Numbers and dates
+have one accepted form (no leading zeros, month, day and time in range, offset +01:00 or +02:00).
+
+## What is derived from what
+
+The authority signs only the request UUID and the receipt code (FIC). Everything else the
+statement uses comes from the request, which the taxpayer signs and could sign again differently.
+Two rules follow:
+
+- A nullifier is derived from the context and the FIC, never from anything the taxpayer writes.
+- Every request field the statement relies on (ordinal, time, total, business unit, device) is in
+  the invoice's opening commitment, together with IIC and FIC, so that a spot check against the
+  authority's record covers all of them. `tools/efi/test_replay.py` shows both.
+
+The scope nullifier of an aggregate is derived from the context, a second hash of the taxpayer key
+that is never published, unit, device and year. With the published key hash in its place, anyone
+holding an invoice (unit and device codes are printed on it) could recompute it.
 
 ## How runs are joined
 
@@ -65,22 +82,23 @@ toolchain.
 ## Tests
 
 ```sh
-(cd pf_xmldsig && nargo test)                  # 17
-(cd pf_efi && nargo test)                      # 21
+(cd pf_xmldsig && nargo test)                  # 27
+(cd pf_efi && nargo test)                      # 31
 python3 ../tools/efi/test_leaf_response.py     # 7 cases
-python3 ../tools/efi/test_leaf_request.py      # 9 cases
+python3 ../tools/efi/test_leaf_request.py      # 14 cases
+python3 ../tools/efi/test_replay.py            # 6 checks on an invoice signed again
 python3 ../tools/efi/test_batch.py --k 1       # 8 cases
 python3 ../tools/efi/test_batch.py --k 10      # 12 cases
 python3 ../tools/efi/test_opening.py           # 4 cases
 python3 ../tools/efi/test_poseidon2.py         # 13 checks of the Python hash against circuits
-python3 ../tools/efi/test_agg.py               # 13 cases through proving, 4 spot checks
-python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 6 spot checks
+python3 ../tools/efi/test_agg.py               # 13 cases through proving, 12 spot checks
+python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 22 spot checks
 ```
 
 The aggregation tests always run the prover. Proofs inside a node or the top proof are checked
 when that proof is made, not when its witness is generated, so a test that only executes the outer
 circuit shows nothing about what is inside.
 
-Compiling the 10-invoice circuits takes about four minutes each. They sit about 23% under 2^22
+Compiling the 10-invoice circuits takes about four minutes each. They sit about 20% under 2^22
 gates; past that, proving time and memory double. Most of an invoice's cost is hashing the request
 (about 150,000 gates for 2,048 bytes) and the two RSA checks.

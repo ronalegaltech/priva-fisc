@@ -13,17 +13,14 @@
 // is generated. A test that only executes a node or the top shows nothing about what is inside.
 
 use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
-use pf_efi::agg::{
-    Run, gamma_from, join_runs, pair_hash, run_commitment, run_from_fields, scope_nullifier,
-    sorted_commitment,
-};
+use pf_efi::agg::{Run, gamma_from, join_runs, run_commitment, run_from_fields, sorted_commitment};
 
 /// Verifies one proof about a run (a leaf proof or a node proof) and returns the run.
 fn verify_run_proof(
     vk: UltraHonkVerificationKey,
     proof: UltraHonkZKProof,
     is_leaf: bool,
-    fields: [Field; 11],
+    fields: [Field; 12],
     blind: Field,
     context: Field,
     year: u32,
@@ -53,7 +50,7 @@ pub fn prove_node(
     vks: [UltraHonkVerificationKey; 2],
     proofs: [UltraHonkZKProof; 2],
     is_leaf: [bool; 2],
-    runs: [[Field; 11]; 2],
+    runs: [[Field; 12]; 2],
     blinds: [Field; 2],
     blind_out: Field,
     taxpayer_key_hash: Field,
@@ -82,7 +79,7 @@ pub fn prove_top(
     run_vk: UltraHonkVerificationKey,
     run_proof: UltraHonkZKProof,
     run_is_leaf: bool,
-    run_fields: [Field; 11],
+    run_fields: [Field; 12],
     run_blind: Field,
     sorted_vk: UltraHonkVerificationKey,
     sorted_proof: UltraHonkZKProof,
@@ -129,6 +126,6 @@ pub fn prove_top(
         run.count as u32,
         run.null_chain,
         run.open_chain,
-        scope_nullifier(context, taxpayer_key_hash, run.unit, run.device, year as Field),
+        run.scope,
     )
 }

@@ -240,3 +240,36 @@ fn test_aggregate_with_unlisted_issuer_key_is_refused() {
     let s = setup();
     s.registry.attest_aggregate(aggregate_proof());
 }
+
+// --- one kind of proof per context ---
+// The two fixtures are made for the same context (see refresh_fixture.sh).
+
+#[test]
+fn test_context_remembers_its_kind() {
+    let s = setup();
+    assert(*s.batch_values.at(1) == *s.aggregate_values.at(1), 'fixtures: same context');
+    assert(s.registry.context_kind(*s.batch_values.at(1)) == 0, 'no kind yet');
+    list_issuer_key(s.registry, *s.batch_values.at(4));
+    s.registry.attest_batch(batch_proof());
+    assert(s.registry.context_kind(*s.batch_values.at(1)) == 1, 'holds batches');
+}
+
+#[test]
+#[should_panic(expected: 'context holds the other kind')]
+fn test_aggregate_is_refused_in_a_context_of_batches() {
+    let s = setup();
+    list_issuer_key(s.registry, *s.batch_values.at(4));
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
+    s.registry.attest_batch(batch_proof());
+    s.registry.attest_aggregate(aggregate_proof());
+}
+
+#[test]
+#[should_panic(expected: 'context holds the other kind')]
+fn test_batch_is_refused_in_a_context_of_aggregates() {
+    let s = setup();
+    list_issuer_key(s.registry, *s.batch_values.at(4));
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
+    s.registry.attest_aggregate(aggregate_proof());
+    s.registry.attest_batch(batch_proof());
+}

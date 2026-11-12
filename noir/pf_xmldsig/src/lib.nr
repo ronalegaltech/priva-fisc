@@ -11,6 +11,8 @@ use poseidon::poseidon2::Poseidon2;
 
 // Domain separator for key hashes: ASCII "PF-RSAKEY1".
 global DOMAIN_RSA_KEY: Field = 0x50462d5253414b455931;
+// Domain separator: ASCII "PF-RSATAG1".
+global DOMAIN_RSA_TAG: Field = 0x50462d52534154414731;
 
 // --- Canonical SignedInfo = SI_HEAD || URI || SI_MID || base64(digest) || SI_TAIL ---
 global SI_HEAD: [u8; 270] = "<SignedInfo xmlns=\"http://www.w3.org/2000/09/xmldsig#\"><CanonicalizationMethod Algorithm=\"http://www.w3.org/2001/10/xml-exc-c14n#\"></CanonicalizationMethod><SignatureMethod Algorithm=\"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256\"></SignatureMethod><Reference URI=\"#"
@@ -108,19 +110,37 @@ pub fn signed_info_digest_request(doc_digest: [u8; 32]) -> [u8; 32] {
     finish_signed_info(SI_STATE_REQUEST, SI_REST_REQUEST, doc_digest)
 }
 
-/// Hash that pins an RSA-2048 public key (e = 65537) to one field element. Limbs are 120-bit,
-/// little-endian, range-checked here; the top limb must be non-zero (a genuine 2048-bit modulus).
-pub fn rsa_key_hash(modulus: [u128; 18]) -> Field {
-    let mut pre: [Field; 19] = [0; 19];
-    pre[0] = DOMAIN_RSA_KEY;
+/// Limbs of an RSA-2048 modulus: 120-bit, little-endian, the top limb non-zero (a genuine 2048-bit
+/// modulus).
+fn assert_modulus_limbs(modulus: [u128; 18]) {
     for i in 0..17 {
         (modulus[i] as Field).assert_max_bit_size::<120>();
-        pre[i + 1] = modulus[i] as Field;
     }
     (modulus[17] as Field).assert_max_bit_size::<8>();
     assert(modulus[17] != 0, "rsa key: modulus is not 2048 bits");
-    pre[18] = modulus[17] as Field;
+}
+
+fn hash_modulus(domain: Field, modulus: [u128; 18]) -> Field {
+    let mut pre: [Field; 19] = [0; 19];
+    pre[0] = domain;
+    for i in 0..18 {
+        pre[i + 1] = modulus[i] as Field;
+    }
     Poseidon2::hash(pre, 19)
+}
+
+/// Hash that pins an RSA-2048 public key (e = 65537) to one field element. This is the value the
+/// circuits publish for a key.
+pub fn rsa_key_hash(modulus: [u128; 18]) -> Field {
+    assert_modulus_limbs(modulus);
+    hash_modulus(DOMAIN_RSA_KEY, modulus)
+}
+
+/// A second hash of the same key, which the circuits never publish. A value derived from it can be
+/// recomputed by someone who holds the key (its certificate), but not from the published key hash.
+pub fn rsa_key_tag(modulus: [u128; 18]) -> Field {
+    assert_modulus_limbs(modulus);
+    hash_modulus(DOMAIN_RSA_TAG, modulus)
 }
 
 /// RSA-2048 PKCS#1 v1.5 / SHA-256 with e = 65537. `redc_param` only feeds unconstrained Barrett
@@ -131,6 +151,7 @@ pub fn assert_rsa_sha256(
     modulus: [u128; 18],
     redc_param: [u128; 18],
 ) {
+    assert_modulus_limbs(modulus);
     let params: BigNumParams<18, 2048> = BigNumParams::new(false, modulus, redc_param);
     let sig: RuntimeBigNum<18, 2048> = RuntimeBigNum::from_array(params, signature);
     sig.validate_in_range();
@@ -187,28 +208,37 @@ pub fn digit(c: u8) -> u64 {
     (c - 48) as u64
 }
 
-/// "YYYY-MM-DDThh:mm:ss+/-hh:mm" -> (YYYYMMDDhhmmss, offset packed as s*10000 + hhmm with s = 1 for
-/// '+', 2 for '-'). Every one of the 25 characters is constrained.
+/// "YYYY-MM-DDThh:mm:ss+hh:mm" -> (YYYYMMDDhhmmss, offset packed as 10000 + hhmm). Every one of the
+/// 25 characters is constrained: month, day and time of day are in range, and the offset is "+01:00"
+/// or "+02:00" (Montenegro's standard and summer time; the documents this code reads carry no other).
 pub fn parse_datetime(s: [u8; 25]) -> (Field, Field) {
     assert(s[4] == 45, "datetime: expected '-'");
     assert(s[7] == 45, "datetime: expected '-'");
     assert(s[10] == 84, "datetime: expected 'T'");
     assert(s[13] == 58, "datetime: expected ':'");
     assert(s[16] == 58, "datetime: expected ':'");
+    assert(s[19] == 43, "datetime: expected '+'");
     assert(s[22] == 58, "datetime: expected ':'");
-    let is_plus = s[19] == 43;
-    let is_minus = s[19] == 45;
-    assert(is_plus | is_minus, "datetime: expected '+' or '-'");
 
-    let mut local: u64 = 0;
-    for i in [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18] {
-        local = local * 10 + digit(s[i]);
-    }
-    let mut off: u64 = if is_plus { 1 } else { 2 };
-    for i in [20, 21, 23, 24] {
-        off = off * 10 + digit(s[i]);
-    }
-    (local as Field, off as Field)
+    let year = digit(s[0]) * 1000 + digit(s[1]) * 100 + digit(s[2]) * 10 + digit(s[3]);
+    let month = digit(s[5]) * 10 + digit(s[6]);
+    let day = digit(s[8]) * 10 + digit(s[9]);
+    let hour = digit(s[11]) * 10 + digit(s[12]);
+    let minute = digit(s[14]) * 10 + digit(s[15]);
+    let second = digit(s[17]) * 10 + digit(s[18]);
+    assert((month >= 1) & (month <= 12), "datetime: month out of range");
+    assert((day >= 1) & (day <= 31), "datetime: day out of range");
+    assert(hour <= 23, "datetime: hour out of range");
+    assert((minute <= 59) & (second <= 59), "datetime: minute or second out of range");
+
+    let offset_hours = digit(s[21]);
+    assert(
+        (s[20] == 48) & ((offset_hours == 1) | (offset_hours == 2)) & (s[23] == 48) & (s[24] == 48),
+        "datetime: offset is not +01:00 or +02:00",
+    );
+
+    let local = ((((year * 100 + month) * 100 + day) * 100 + hour) * 100 + minute) * 100 + second;
+    (local as Field, (10000 + offset_hours * 100) as Field)
 }
 
 /// EFI registration code "[a-z]{2}[0-9]{3}[a-z]{2}[0-9]{3}" -> its 10 bytes packed big-endian.
@@ -226,7 +256,7 @@ pub fn parse_registration_code(s: [u8; 10]) -> Field {
     acc
 }
 
-/// Decimal digits terminated by '"' (1 to N-1 digits) -> value.
+/// Decimal digits terminated by '"' (1 to N-1 digits, the first not '0') -> value, at least 1.
 pub fn parse_uint_until_quote<let N: u32>(b: [u8; N]) -> u64 {
     let mut acc: u64 = 0;
     let mut digits: u32 = 0;
@@ -237,7 +267,11 @@ pub fn parse_uint_until_quote<let N: u32>(b: [u8; N]) -> u64 {
                 assert(digits >= 1, "integer: empty");
                 done = true;
             } else {
-                acc = acc * 10 + digit(b[j]);
+                let d = digit(b[j]);
+                if digits == 0 {
+                    assert(d != 0, "integer: leading zero");
+                }
+                acc = acc * 10 + d;
                 digits += 1;
             }
         }
@@ -253,6 +287,7 @@ pub fn parse_amount_until_quote(b: [u8; 16]) -> (bool, u64) {
     let mut int_digits: u32 = 0;
     let mut frac_digits: u32 = 0;
     let mut seen_dot = false;
+    let mut leading_zero = false;
     let mut done = false;
     for j in 0..16 {
         let c = b[j];
@@ -260,6 +295,8 @@ pub fn parse_amount_until_quote(b: [u8; 16]) -> (bool, u64) {
             if c == 34 {
                 let plain_zero = !seen_dot & !neg & (int_digits == 1) & (cents == 0);
                 assert((seen_dot & (frac_digits == 2)) | plain_zero, "amount: malformed");
+                assert(!leading_zero | (int_digits == 1), "amount: leading zero");
+                assert(!neg | (cents != 0), "amount: negative zero");
                 done = true;
             } else if c == 45 {
                 assert(j == 0, "amount: '-' only allowed first");
@@ -268,7 +305,11 @@ pub fn parse_amount_until_quote(b: [u8; 16]) -> (bool, u64) {
                 assert(!seen_dot & (int_digits >= 1), "amount: misplaced '.'");
                 seen_dot = true;
             } else {
-                cents = cents * 10 + digit(c);
+                let d = digit(c);
+                if !seen_dot & (int_digits == 0) {
+                    leading_zero = d == 0;
+                }
+                cents = cents * 10 + d;
                 if seen_dot {
                     frac_digits += 1;
                 } else {
@@ -380,8 +421,34 @@ fn test_parse_datetime() {
     let (local, off) = parse_datetime("2026-03-14T09:26:53+01:00".as_bytes());
     assert(local == 20260314092653);
     assert(off == 10100);
-    let (_, off2) = parse_datetime("2026-03-14T09:26:53-05:30".as_bytes());
-    assert(off2 == 20530);
+    let (local2, off2) = parse_datetime("2026-07-31T23:59:59+02:00".as_bytes());
+    assert(local2 == 20260731235959);
+    assert(off2 == 10200);
+}
+
+#[test(should_fail_with = "datetime: month out of range")]
+fn test_parse_datetime_rejects_month_13() {
+    let _ = parse_datetime("2026-13-14T09:26:53+01:00".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: day out of range")]
+fn test_parse_datetime_rejects_day_0() {
+    let _ = parse_datetime("2026-03-00T09:26:53+01:00".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: hour out of range")]
+fn test_parse_datetime_rejects_hour_24() {
+    let _ = parse_datetime("2026-03-14T24:00:00+01:00".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: expected '+'")]
+fn test_parse_datetime_rejects_negative_offset() {
+    let _ = parse_datetime("2026-03-14T09:26:53-05:30".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: offset is not +01:00 or +02:00")]
+fn test_parse_datetime_rejects_other_offset() {
+    let _ = parse_datetime("2026-12-31T23:30:00+13:00".as_bytes());
 }
 
 #[test(should_fail_with = "datetime: expected 'T'")]
@@ -395,6 +462,33 @@ fn test_parse_amount() {
     assert(parse_amount_until_quote(pad("-1250.00\" TotPric".as_bytes())) == (true, 125000));
     assert(parse_amount_until_quote(pad("0\" TotPriceWoVAT=".as_bytes())) == (false, 0));
     assert(parse_amount_until_quote(pad("0.05\" TotPriceWoV".as_bytes())) == (false, 5));
+}
+
+#[test(should_fail_with = "amount: leading zero")]
+fn test_parse_amount_rejects_leading_zero() {
+    let _ = parse_amount_until_quote(pad("017.15\" TotPriceW".as_bytes()));
+}
+
+#[test(should_fail_with = "amount: negative zero")]
+fn test_parse_amount_rejects_negative_zero() {
+    let _ = parse_amount_until_quote(pad("-0.00\" TotPriceWo".as_bytes()));
+}
+
+#[test(should_fail_with = "integer: leading zero")]
+fn test_parse_uint_rejects_leading_zero() {
+    let _ = parse_uint_until_quote::<16>(pad("007\" InvType=".as_bytes()));
+}
+
+#[test(should_fail_with = "integer: leading zero")]
+fn test_parse_uint_rejects_zero() {
+    let _ = parse_uint_until_quote::<16>(pad("0\" InvType=".as_bytes()));
+}
+
+#[test]
+fn test_key_tag_differs_from_key_hash() {
+    let mut modulus: [u128; 18] = [7; 18];
+    modulus[17] = 0x80;
+    assert(rsa_key_tag(modulus) != rsa_key_hash(modulus));
 }
 
 #[test(should_fail_with = "amount: malformed")]

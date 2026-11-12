@@ -39,20 +39,34 @@ def skip_four(invoices, k):
     return [(first + [first[-1]] * (k - 6), 6), (invoices[10:20], 10)]
 
 
-def spot_check(record, proof_dir, positions):
-    """Yields (label, passed) for a spot check of the given invoice positions."""
+def spot_check(record, proof_dir, positions, n):
+    """Yields (label, passed) for a spot check of the given invoice positions (the run starts at
+    ordinal 1 and holds n invoices)."""
     openings = [opening.reveal_from_record(record, i) for i in positions]
     for i, o in zip(positions, openings):
-        good = opening.check_against_proof(o, proof_dir) and o["ordinal"] == i + 1
-        yield f"spot check: invoice {i + 1} opens", good
+        yield f"spot check: invoice {i + 1} opens", opening.check_against_proof(o, proof_dir, ordinal=i + 1)
     o = dict(openings[0])
     cents = int(o["total"].replace(".", "")) + 1
     o["total"] = f"{cents // 100}.{cents % 100:02d}"
-    yield "spot check: amount raised by one cent", not opening.check_against_proof(o, proof_dir)
+    yield "spot check: amount raised by one cent", not opening.check_against_proof(o, proof_dir, ordinal=o["ordinal"])
+    o = dict(openings[0])
+    o["device"] = o["device"][:-1] + ("0" if o["device"][-1] != "0" else "1")
+    yield "spot check: another device code", not opening.check_against_proof(o, proof_dir, ordinal=o["ordinal"])
+    yield "spot check: asked for another ordinal", not opening.check_against_proof(openings[0], proof_dir, ordinal=openings[0]["ordinal"] + 1)
     if len(openings) > 1:
         o = dict(openings[0])
         o["path"] = openings[1]["path"]
-        yield "spot check: opening under another path", not opening.check_against_proof(o, proof_dir)
+        yield "spot check: opening under another path", not opening.check_against_proof(o, proof_dir, ordinal=o["ordinal"])
+    first, last = opening.reveal_from_record(record, 0), opening.reveal_from_record(record, n - 1)
+    yield "spot check: first invoice shown as first", opening.check_against_proof(first, proof_dir, edge="first")
+    yield "spot check: last invoice shown as last", opening.check_against_proof(last, proof_dir, edge="last")
+    if n > 2:
+        middle = opening.reveal_from_record(record, n // 2)
+        yield "spot check: a middle invoice as first", not opening.check_against_proof(middle, proof_dir, edge="first")
+        yield "spot check: a middle invoice as last", not opening.check_against_proof(middle, proof_dir, edge="last")
+    if n > 1:
+        yield "spot check: last invoice as first", not opening.check_against_proof(last, proof_dir, edge="first")
+        yield "spot check: first invoice as last", not opening.check_against_proof(first, proof_dir, edge="last")
 
 
 def main():
@@ -77,7 +91,7 @@ def main():
                 counted = st["invoice_count"] == n
                 outcome, reason = ("accepted", "") if ok and counted else ("refused", "; ".join(problems) or "wrong invoice count")
                 if ok and counted and spot:
-                    checks = list(spot_check(record, proof_dir, spot))
+                    checks = list(spot_check(record, proof_dir, spot, n))
             except agg.StepFailed as e:
                 outcome, reason = "refused", str(e)
         good = (outcome == "accepted") if expect is None else (outcome == "refused" and expect in reason)

@@ -3,7 +3,7 @@
 
   pf.py prove  --out DIR --threshold EUR --year Y [--context HEX] [--keep FILE]  REQ1.xml RESP1.xml [REQ2.xml RESP2.xml ...]
   pf.py prove  --out DIR --synthetic N [--keep FILE]      (invented invoices, for demos and tests)
-  pf.py verify DIR [--taxpayer-cert FILE]
+  pf.py verify DIR [--context HEX] [--taxpayer-cert FILE]
 
 `prove` runs on the taxpayer's machine. It reads signed request/response files (in ordinal order),
 proves the statement, and leaves in DIR only what may be handed over: the proof, its public values
@@ -18,6 +18,16 @@ and one opening commitment per invoice. Any other number, up to 4096, gives an a
 `verify` runs on the verifier's machine. It does NOT trust a verification key supplied with the
 proof: it derives the key from the circuit in this repository, checks the proof against it, and
 looks the authority key up in registry/issuer_keys.json.
+
+The context is a value the VERIFIER chooses and hands to the taxpayer (who passes it to `prove`).
+Nullifiers are bound to it, so a proof made for one verifier is of no use to another. Give the
+same value to `verify --context`: a proof made for another context is refused. A verifier who
+accepts whatever context a proof carries has no protection against the same invoices being shown
+twice.
+
+Exit status of `verify`: 0 valid, with a production authority key; 1 invalid; 2 valid, but the
+authority key is not listed or is not a production key; 3 the certificate given is not the
+taxpayer key of the proof; 4 the proof was made for another context.
 
 A proof names the taxpayer only by the hash of the signing key. Who that is comes from the
 taxpayer's fiscalization certificate: with --taxpayer-cert (a certificate file, or any signed EFI
@@ -48,8 +58,11 @@ import opening  # noqa: E402
 SIZES = (1, 10)   # batch circuits
 LEAF = 10         # leaf size of aggregated proofs
 NOT_PROVED = (
-    "that the tax authority saw the CONTENT of these invoices (its signature covers the request "
-    "UUID and the receipt code only) - ask for a spot check, see tools/efi/opening.py",
+    "that the tax authority saw the CONTENT of these invoices: its signature covers the request "
+    "UUID and the receipt code only. Ordinals, amounts, year, business unit and device are what "
+    "the taxpayer signed - ask for a spot check, see tools/efi/opening.py",
+    "that the total is spread over many invoices: one altered invoice can carry a large part "
+    "of it, and a spot check of a few invoices may miss it",
     "that no invoices exist after the last one, or on other devices of the same taxpayer",
 )
 
@@ -98,6 +111,8 @@ def prove(a):
     if a.synthetic:
         k = a.synthetic
         invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(k, None, 1, None)
+        if a.context:
+            context = int(a.context, 0)
     else:
         if not a.files or len(a.files) % 2:
             sys.exit("give REQUEST.xml RESPONSE.xml for each invoice, in ordinal order")
@@ -192,11 +207,21 @@ def verify(a):
     print(f"  starts at ordinal 1    : {'yes' if st['starts_at_ordinal_one'] else 'no'}")
     print(f"  taxpayer key hash      : {st['taxpayer_key_hash']}")
     print(f"  authority key hash     : {st['issuer_key_hash']}")
-    if issuer:
+    production = bool(issuer) and issuer.get("environment") == "production"
+    if production:
         print(f"  authority key          : LISTED as {issuer['id']} ({issuer['status']})")
+    elif issuer:
+        print(f"  authority key          : listed as {issuer['id']}, NOT A PRODUCTION KEY ({issuer['status']})")
+        print("                           receipts under this key can be had for invented invoices")
     else:
         print("  authority key          : NOT IN registry/issuer_keys.json - do not rely on this proof")
-    print(f"  context                : {st['context']}")
+    context_ok = a.context is None or int(a.context, 0) == int(st["context"], 16)
+    if a.context is None:
+        print(f"  context                : {st['context']} (not compared: no --context given)")
+    elif context_ok:
+        print(f"  context                : {st['context']} (the one expected)")
+    else:
+        print(f"  context                : {st['context']} - NOT the expected one: this proof was made for another verifier")
     print(f"  nullifiers / openings  : {published}")
     cert_ok = True
     if a.taxpayer_cert:
@@ -210,9 +235,11 @@ def verify(a):
     print("  NOT proved:")
     for line in NOT_PROVED:
         print(f"    - {line}")
+    if not context_ok:
+        return 4
     if not cert_ok:
         return 3
-    return 0 if issuer else 2
+    return 0 if production else 2
 
 
 def main():
@@ -222,12 +249,13 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--threshold", help="minimum sum of totals, in EUR (e.g. 1500.00)")
     p.add_argument("--year", type=int)
-    p.add_argument("--context", help="hex value naming the verifier/purpose; random if omitted")
+    p.add_argument("--context", help="hex value the verifier issued for this presentation; random if omitted")
     p.add_argument("--synthetic", type=int, metavar="N")
     p.add_argument("--keep", metavar="FILE", help="write the spot-check record (private) to FILE")
     p.add_argument("files", nargs="*")
     v = sub.add_parser("verify")
     v.add_argument("dir")
+    v.add_argument("--context", help="the context this verifier issued (hex); a proof for another one is refused")
     v.add_argument("--taxpayer-cert", help="taxpayer certificate (DER/PEM), or a signed EFI request (.xml)")
     a = ap.parse_args()
     return prove(a) if a.cmd == "prove" else verify(a)

@@ -43,11 +43,12 @@ pub struct Run {
     pub fic_chain: Field, // commitment to the run's receipt codes, in order
     pub null_chain: Field, // commitment to the run's nullifiers, in order
     pub open_chain: Field, // commitment to the run's opening commitments, in order
+    pub scope: Field, // scope nullifier of the presentation this run belongs to
 }
 
-pub global RUN_FIELDS: u32 = 11;
+pub global RUN_FIELDS: u32 = 12;
 
-pub fn run_from_fields(f: [Field; 11]) -> Run {
+pub fn run_from_fields(f: [Field; 12]) -> Run {
     Run {
         count: f[0],
         first_ordinal: f[1],
@@ -60,13 +61,14 @@ pub fn run_from_fields(f: [Field; 11]) -> Run {
         fic_chain: f[8],
         null_chain: f[9],
         open_chain: f[10],
+        scope: f[11],
     }
 }
 
-pub fn run_to_fields(r: Run) -> [Field; 11] {
+pub fn run_to_fields(r: Run) -> [Field; 12] {
     [
         r.count, r.first_ordinal, r.last_ordinal, r.unit, r.device, r.sum_plus, r.sum_minus,
-        r.fic_prod, r.fic_chain, r.null_chain, r.open_chain,
+        r.fic_prod, r.fic_chain, r.null_chain, r.open_chain, r.scope,
     ]
 }
 
@@ -74,9 +76,9 @@ pub fn run_commitment(r: Run, blind: Field) -> Field {
     Poseidon2::hash(
         [
             DOMAIN_RUN, r.count, r.first_ordinal, r.last_ordinal, r.unit, r.device, r.sum_plus,
-            r.sum_minus, r.fic_prod, r.fic_chain, r.null_chain, r.open_chain, blind,
+            r.sum_minus, r.fic_prod, r.fic_chain, r.null_chain, r.open_chain, r.scope, blind,
         ],
-        13,
+        14,
     )
 }
 
@@ -92,7 +94,7 @@ pub fn codes_commitment<let K: u32>(count: Field, fics: [Field; K]) -> Field {
 }
 
 /// The run made of the checked invoices of one leaf.
-pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field) -> Run {
+pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field, context: Field, year: u32) -> Run {
     let mut fic_prod: Field = 1;
     for i in 0..K {
         if i < c.count {
@@ -111,6 +113,7 @@ pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field) -> Run {
         fic_chain: codes_commitment(c.count as Field, c.fics),
         null_chain: Poseidon2::hash(c.nullifiers, K),
         open_chain: Poseidon2::hash(c.openings, K),
+        scope: scope_nullifier(context, c.taxpayer_key_tag, c.unit, c.device, year as Field),
     }
 }
 
@@ -119,6 +122,7 @@ pub fn join_runs(left: Run, right: Run) -> Run {
     assert(right.first_ordinal == left.last_ordinal + 1, "join: ordinals are not consecutive across runs");
     assert(right.unit == left.unit, "join: mixed business units");
     assert(right.device == left.device, "join: mixed devices");
+    assert(right.scope == left.scope, "join: runs of different presentations");
     Run {
         count: left.count + right.count,
         first_ordinal: left.first_ordinal,
@@ -131,6 +135,7 @@ pub fn join_runs(left: Run, right: Run) -> Run {
         fic_chain: pair_hash(left.fic_chain, right.fic_chain),
         null_chain: pair_hash(left.null_chain, right.null_chain),
         open_chain: pair_hash(left.open_chain, right.open_chain),
+        scope: left.scope,
     }
 }
 
@@ -166,8 +171,12 @@ pub fn check_sorted<let S: u32>(sorted: [Field; S], n: u32, gamma: Field) -> (Fi
 }
 
 /// One nullifier for the whole presentation: this taxpayer, unit, device and year, in this context.
-pub fn scope_nullifier(context: Field, taxpayer_key_hash: Field, unit: Field, device: Field, year: Field) -> Field {
-    Poseidon2::hash([DOMAIN_SCOPE, context, taxpayer_key_hash, unit, device, year], 6)
+/// The taxpayer enters through the key tag, which is not published: unit and device codes are
+/// printed on every invoice, so with the published key hash here any customer could recompute the
+/// value and learn which business an attestation belongs to. Unit and device are the taxpayer's
+/// word (see batch.nr); a spot check confirms them.
+pub fn scope_nullifier(context: Field, taxpayer_key_tag: Field, unit: Field, device: Field, year: Field) -> Field {
+    Poseidon2::hash([DOMAIN_SCOPE, context, taxpayer_key_tag, unit, device, year], 6)
 }
 
 /// Leaf statement. Public: context, year, gamma, and the key hashes of the leaf and node circuits
@@ -211,7 +220,7 @@ pub fn prove_leaf<let K: u32, let M: u32>(
         context,
         year,
     );
-    (c.taxpayer_key_hash, c.issuer_key_hash, run_commitment(leaf_run(c, gamma), blind))
+    (c.taxpayer_key_hash, c.issuer_key_hash, run_commitment(leaf_run(c, gamma, context, year), blind))
 }
 
 /// The same computation as `prove_leaf`, returning the run and the leaf's opening commitments in
@@ -235,7 +244,7 @@ pub fn leaf_run_in_clear<let K: u32, let M: u32>(
     context: Field,
     year: u32,
     gamma: Field,
-) -> ([Field; 11], [Field; K]) {
+) -> ([Field; 12], [Field; K]) {
     let c = check_invoices(
         request_docs,
         request_lens,
@@ -254,7 +263,7 @@ pub fn leaf_run_in_clear<let K: u32, let M: u32>(
         context,
         year,
     );
-    (run_to_fields(leaf_run(c, gamma)), c.openings)
+    (run_to_fields(leaf_run(c, gamma, context, year)), c.openings)
 }
 
 #[test]
@@ -263,6 +272,7 @@ fn test_partly_filled_leaf_counts_only_its_invoices() {
     let c: BatchCore<3> = BatchCore {
         count: 2,
         taxpayer_key_hash: 1,
+        taxpayer_key_tag: 3,
         issuer_key_hash: 2,
         first_ordinal: 4,
         last_ordinal: 5,
@@ -274,8 +284,9 @@ fn test_partly_filled_leaf_counts_only_its_invoices() {
         nullifiers: [11, 12, 0],
         openings: [21, 22, 0],
     };
-    let r = leaf_run(c, gamma);
+    let r = leaf_run(c, gamma, 99, 2026);
     assert(r.count == 2);
+    assert(r.scope == scope_nullifier(99, 3, 7, 8, 2026));
     assert(r.last_ordinal == 5);
     assert(r.fic_prod == (gamma - 3) * (gamma - 5));
     // The same two codes in a full leaf of two give another commitment only through the slots.
@@ -309,15 +320,15 @@ fn test_sorted_list_rejects_hidden_tail() {
 
 #[test(should_fail_with = "join: ordinals are not consecutive across runs")]
 fn test_join_rejects_gap() {
-    let l = run_from_fields([10, 1, 10, 7, 8, 100, 0, 2, 3, 4, 5]);
-    let r = run_from_fields([10, 12, 21, 7, 8, 100, 0, 2, 3, 4, 5]);
+    let l = run_from_fields([10, 1, 10, 7, 8, 100, 0, 2, 3, 4, 5, 9]);
+    let r = run_from_fields([10, 12, 21, 7, 8, 100, 0, 2, 3, 4, 5, 9]);
     let _ = join_runs(l, r);
 }
 
 #[test]
 fn test_join_adds_up() {
-    let l = run_from_fields([10, 1, 10, 7, 8, 100, 5, 2, 3, 4, 5]);
-    let r = run_from_fields([10, 11, 20, 7, 8, 40, 1, 3, 6, 7, 8]);
+    let l = run_from_fields([10, 1, 10, 7, 8, 100, 5, 2, 3, 4, 5, 9]);
+    let r = run_from_fields([10, 11, 20, 7, 8, 40, 1, 3, 6, 7, 8, 9]);
     let j = join_runs(l, r);
     assert(j.count == 20);
     assert(j.first_ordinal == 1);
@@ -326,4 +337,11 @@ fn test_join_adds_up() {
     assert(j.sum_minus == 6);
     assert(j.fic_prod == 6);
     assert(j.fic_chain == pair_hash(3, 6));
+}
+
+#[test(should_fail_with = "join: runs of different presentations")]
+fn test_join_rejects_other_scope() {
+    let l = run_from_fields([10, 1, 10, 7, 8, 100, 0, 2, 3, 4, 5, 9]);
+    let r = run_from_fields([10, 11, 20, 7, 8, 100, 0, 2, 3, 4, 5, 10]);
+    let _ = join_runs(l, r);
 }

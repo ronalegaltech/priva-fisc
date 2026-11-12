@@ -7,13 +7,24 @@
 //!     so the same invoices cannot be presented twice in the same context.
 //!
 //! Two kinds of proof are accepted:
-//!   * a batch of 10 invoices (noir/batch_k10), one nullifier per invoice;
+//!   * a batch of 10 invoices (noir/batch_k10), one nullifier per invoice, derived from the
+//!     invoice's receipt code;
 //!   * an aggregate of any number of invoices (noir/agg_top), one scope nullifier for the whole
-//!     run. The aggregate proof names the leaf, node and sorted-list circuits it was built from; it
-//!     is accepted only if those are the circuits this registry was deployed with.
+//!     run (taxpayer key, business unit, device, year). The aggregate proof names the leaf, node
+//!     and sorted-list circuits it was built from; it is accepted only if those are the circuits
+//!     this registry was deployed with.
+//! The two kinds of nullifier cannot be compared with each other, so a context takes one kind of
+//! proof only: the first attestation in a context decides which.
+//!
+//! The context is chosen by whoever relies on the attestations and given to the taxpayer. The
+//! registry records it; it cannot know which context a relying party issued. A relying party reads
+//! only the attestations made in its own context.
 //!
 //! It records WHAT WAS PROVED, never invoice data. What a proof does not prove (that the authority
-//! saw the invoice content, completeness beyond the run) is not cured here either.
+//! saw the invoice content, completeness beyond the run) is not cured here either. A scope
+//! nullifier rests on unit and device codes the taxpayer wrote: it stops a second presentation of
+//! the same run, and a spot check is what confirms the codes. `submitted_by` is the account that
+//! sent the transaction, not necessarily the taxpayer: a proof is not bound to its sender.
 
 use starknet::{ClassHash, ContractAddress};
 
@@ -46,6 +57,8 @@ pub trait IPrivaFiscRegistry<TContractState> {
     fn set_issuer_key(ref self: TContractState, key_hash: u256, active: bool);
     fn is_issuer_key(self: @TContractState, key_hash: u256) -> bool;
     fn is_nullifier_used(self: @TContractState, nullifier: u256) -> bool;
+    /// Kind of proof a context holds: 0 none yet, 1 batches, 2 aggregates.
+    fn context_kind(self: @TContractState, context: u256) -> u8;
     /// Verifies a 10-invoice batch proof, checks the issuer key and the nullifiers, records the
     /// attestation and returns its id. Reverts on any failure.
     fn attest_batch(ref self: TContractState, full_proof_with_hints: Span<felt252>) -> u64;
@@ -84,6 +97,7 @@ pub mod PrivaFiscRegistry {
         sorted_vk_hash: u256,
         issuer_keys: Map<u256, bool>,
         nullifiers: Map<u256, bool>,
+        context_kinds: Map<u256, u8>,
         attestations: Map<u64, Attestation>,
         attestation_count: u64,
     }
@@ -171,6 +185,15 @@ pub mod PrivaFiscRegistry {
             self.nullifiers.write(nullifier, true);
         }
 
+        /// A context holds batches (1) or aggregates (2), never both.
+        fn use_context(ref self: ContractState, context: u256, kind: u8) {
+            let held = self.context_kinds.read(context);
+            assert(held == 0 || held == kind, 'context holds the other kind');
+            if held == 0 {
+                self.context_kinds.write(context, kind);
+            }
+        }
+
         fn record(ref self: ContractState, attestation: Attestation) -> u64 {
             let id = self.attestation_count.read() + 1;
             self.attestation_count.write(id);
@@ -195,6 +218,10 @@ pub mod PrivaFiscRegistry {
             self.nullifiers.read(nullifier)
         }
 
+        fn context_kind(self: @ContractState, context: u256) -> u8 {
+            self.context_kinds.read(context)
+        }
+
         fn attest_batch(ref self: ContractState, full_proof_with_hints: Span<felt252>) -> u64 {
             let values = self
                 .verified_values(self.batch_verifier.read(), full_proof_with_hints, BATCH_PUBLIC_VALUES);
@@ -206,6 +233,7 @@ pub mod PrivaFiscRegistry {
             let starts_at_one = *values.at(5) == 1;
 
             assert(self.issuer_keys.read(issuer_key_hash), 'issuer key not registered');
+            self.use_context(context, 1);
             let mut i: u32 = 0;
             while i != BATCH_SIZE {
                 self.use_nullifier(*values.at(6 + i));
@@ -264,6 +292,7 @@ pub mod PrivaFiscRegistry {
             assert(*values.at(4) == self.node_vk_hash.read(), 'unknown node circuit');
             assert(*values.at(5) == self.sorted_vk_hash.read(), 'unknown sorted circuit');
             assert(self.issuer_keys.read(issuer_key_hash), 'issuer key not registered');
+            self.use_context(context, 2);
             self.use_nullifier(scope_nullifier);
 
             let id = self

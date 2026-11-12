@@ -31,7 +31,6 @@ fn main(
             DOMAIN_REQUEST,
             f.uuid,
             f.iic,
-            f.iic_signature_hash,
             f.busin_unit_code,
             f.tcr_code,
             f.ordinal as Field,
@@ -41,7 +40,7 @@ fn main(
             f.total_cents as Field,
             salt,
         ],
-        12,
+        11,
     );
 
     (signer_key_hash, request_commitment)

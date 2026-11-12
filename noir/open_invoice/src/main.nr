@@ -13,7 +13,11 @@ fn main(
     issue_tz: Field,
     total_negative: Field,
     total_cents: Field,
+    unit: Field,
+    device: Field,
     salt: Field,
 ) -> pub Field {
-    opening_commitment(iic, fic, ordinal, issue_local_ts, issue_tz, total_negative, total_cents, salt)
+    opening_commitment(
+        iic, fic, ordinal, issue_local_ts, issue_tz, total_negative, total_cents, unit, device, salt,
+    )
 }

@@ -27,7 +27,7 @@ fn main(
     context: Field,
     year: u32,
     gamma: Field,
-) -> pub ([Field; 11], [Field; K]) {
+) -> pub ([Field; 12], [Field; K]) {
     leaf_run_in_clear(
         request_docs,
         request_lens,

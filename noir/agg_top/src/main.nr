@@ -11,7 +11,7 @@ fn main(
     run_vk: UltraHonkVerificationKey,
     run_proof: UltraHonkZKProof,
     run_is_leaf: bool,
-    run_fields: [Field; 11],
+    run_fields: [Field; 12],
     run_blind: Field,
     sorted_vk: UltraHonkVerificationKey,
     sorted_proof: UltraHonkZKProof,

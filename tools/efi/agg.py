@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Aggregated proof over any number of invoices (noir/agg_*; method in noir/pf_efi/src/agg.nr).
 
-  agg.py prove  --k K --n N --out DIR --synthetic [--keep FILE]    N invented invoices, leaves of K
+  agg.py prove  --k K --n N --out DIR --synthetic [--keep FILE] [--context HEX]    N invented invoices, leaves of K
   agg.py verify DIR
 
 The invoices are cut, in order, into leaves of up to K (the last leaf may be partly filled). Leaves
@@ -177,7 +177,7 @@ def join_run_values(left, right):
     return [
         left[0] + right[0], left[1], right[2], left[3], left[4], left[5] + right[5], left[6] + right[6],
         left[7] * right[7] % P, pair_hash(left[8], right[8]), pair_hash(left[9], right[9]),
-        pair_hash(left[10], right[10]),
+        pair_hash(left[10], right[10]), left[11],
     ]
 
 
@@ -229,8 +229,8 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
             blind = secrets.randbits(248)
             d = new_dir()
             prove(leaf, common + f'blind = "{hex(blind)}"\n' + leaf_public + hashes, d, "noir-recursive")
-            items.append({"dir": d, "is_leaf": True, "run": values[:11], "blind": blind,
-                          "openings": values[11:], "tree": {"h": hex(values[10]), "leaf": index}})
+            items.append({"dir": d, "is_leaf": True, "run": values[:12], "blind": blind,
+                          "openings": values[12:], "tree": {"h": hex(values[10]), "leaf": index}})
         keys = fields_of(os.path.join(items[0]["dir"], "public_inputs"))
         tkh, ikh = keys[5], keys[6]
         key_lines = f'taxpayer_key_hash = "{hex(tkh)}"\nissuer_key_hash = "{hex(ikh)}"\n'
@@ -339,12 +339,15 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--synthetic", action="store_true", required=True)
     p.add_argument("--keep", help="write the prover's spot-check record to this file")
+    p.add_argument("--context", help="hex value naming the verifier and purpose; random if omitted")
     v = sub.add_parser("verify")
     v.add_argument("dir")
     a = ap.parse_args()
     try:
         if a.cmd == "prove":
             invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(a.n, None, 1, None)
+            if a.context:
+                context = int(a.context, 0)
             st = make_proof(a.k, invoices, tmod, imod, threshold, context, year, a.out, keep=a.keep)
             print(f"aggregated proof for {st['invoice_count']} invoices written to {a.out}")
             return 0

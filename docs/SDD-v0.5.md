@@ -8,7 +8,7 @@
 |---|---|---|---|
 | Kanıt hattı | Cairo + S-two, üç ayrı devre | Noir devreleri, Barretenberg (UltraHonk) kanıtı, Starknet'te Garaga doğrulayıcı | `scarb prove` çıktısı gizlilik sağlamıyor ve "soundness not yet guaranteed" uyarısı taşıyor; keyfi bir Cairo programının S-two kanıtını doğrulayan Starknet sözleşmesi yok; Cairo'da SHA-256 hazır bileşen değil. Noir hattı bugün uçtan uca çalışıyor. |
 | Devlet imzasının kapsamı | "Devlet imzası faturayı bağlar" varsayımı | Devlet imzası yalnız (RequestUUID, SendDateTime, UUID, FIC) dörtlüsünü bağlıyor | Canlı şema ve gerçek imzalı örnek üzerinde doğrulandı. İçerik ve sıra numarası yalnız mükellef imzalı istekte. |
-| Devre yapısı | İmza / tamlık / predikat ayrı devreler, sonra birleştirme | Tek ifade: imza + bağ + tamlık + eşik aynı devrede | Fatura başına doğrudan denetim (~0,42 milyon kapı) bir iç kanıtı doğrulamaktan (~0,73 milyon kapı) ucuz. Özyineleme yalnız ölçek için gerekli. |
+| Devre yapısı | İmza / tamlık / predikat ayrı devreler, sonra birleştirme | Tek ifade: imza + bağ + tamlık + eşik aynı devrede | Fatura başına doğrudan denetim (~0,34 milyon kapı) bir iç kanıtı doğrulamaktan (~0,73 milyon kapı) ucuz. Özyineleme yalnız ölçek için gerekli. |
 
 S-two ve STRK20, Starknet'e yol haritası olarak anlatılır; bugünkü teslimatın parçası değildir.
 
@@ -23,11 +23,12 @@ S-two ve STRK20, Starknet'e yol haritası olarak anlatılır; bugünkü teslimat
 5. Hiçbir idare yanıtı iki kez kullanılmamış (FIC'ler birbirinden farklı).
 6. Tutarların toplamı (düzeltme faturaları eksi sayılır) açıklanan eşikten büyük ya da eşit.
 
-**Açığa çıkan:** T'nin özeti, A'nın özeti, yıl, eşik, fatura sayısı, grubun 1 numaradan başlayıp başlamadığı, fatura başına bir nullifier ve bir açma taahhüdü. **Açığa çıkmayan:** fatura içerikleri, tutarlar, müşteriler, IIC, FIC, sıra numaraları.
+**Açığa çıkan:** T'nin özeti, A'nın özeti, yıl, eşik, fatura sayısı, grubun 1 numaradan başlayıp başlamadığı, kanıtın hangi bağlam için üretildiği, fatura başına bir nullifier ve bir açma taahhüdü (birleştirilmiş kanıtta bunların yerine tek bir kapsam nullifier'ı ve iki kök). **Açığa çıkmayan:** fatura içerikleri, tutarlar, müşteriler, IIC, FIC, sıra numaraları.
 
 **Kanıtlanmayan** (ifadenin gösterildiği her yerde yazılır):
 
-- İdarenin fatura *içeriğini* gördüğü. İdare imzası içeriği kapsamıyor. Ucuz faturalar kaydedip aynı UUID'ler altında başka içerik imzalayan bir mükellef bu devreden geçer. Karşılığı devre dışındadır (bkz. 4.4).
+- İdarenin fatura *içeriğini* gördüğü. İdare imzası yalnız istek UUID'sini ve yanıt kodunu kapsıyor. İfadenin istekten aldığı her şey (sıra numarası, yıl, tutar, iş birimi, cihaz) mükellefin kendi imzaladığıdır. Ucuz faturalar kaydedip aynı UUID'ler altında başka içerik imzalayan bir mükellef bu devreden geçer. Karşılığı devre dışındadır (bkz. 4.4).
+- Toplamın çok sayıda faturaya yayıldığı. Eşik ifadesinde tek bir değiştirilmiş fatura toplamın büyük kısmını taşıyabilir; birkaç faturanın açılması bunu kaçırabilir (bkz. 4.4).
 - Son sıra numarasından sonra fatura kesilmediği ve mükellefin başka cihazlarının olmadığı.
 - Faturanın gerçek bir satışa karşılık geldiği ya da ödendiği.
 
@@ -44,7 +45,8 @@ Saldırgan kanıtı üreten mükelleftir. Doğrulayıcı (banka, faktoring şirk
 | Fatura atlamak | Sıra numaraları ardışık olmak zorunda | Devre |
 | Bir yanıtı iki faturaya kullanmak | FIC'ler ikişer ikişer farklı | Devre |
 | Tutarı değiştirmek | Tutar mükellef imzalı belgeden okunur; imza bozulur | Devre |
-| Aynı faturaları aynı doğrulayıcıya iki kez sunmak | Fatura başına nullifier; doğrulayıcı tekrarı görür | Devre + durum sözleşmesi |
+| Aynı faturaları aynı doğrulayıcıya iki kez sunmak | Fatura başına nullifier, idarenin verdiği yanıt kodundan türetilir; mükellef faturayı yeniden imzalayarak değiştiremez. Doğrulayıcı kendi verdiği bağlamı kanıttakiyle karşılaştırır | Devre + durum sözleşmesi + doğrulayıcı |
+| Faturayı başka cihaz ya da birim koduyla yeniden imzalamak (cihazları karıştırmak, kapsam nullifier'ını değiştirmek) | Birim ve cihaz açma taahhüdünün içindedir; örnek açtırmada idare kaydıyla karşılaştırılır | Protokol (devre dışı) |
 | İçeriği baştan sahte imzalamak | Örnek açtırma: doğrulayıcı rastgele faturalar seçer, açılanları idarenin kamu servisiyle karşılaştırır | Protokol (devre dışı) |
 
 ## 3. Bileşenler: nerede ne kullanılıyor
@@ -61,7 +63,7 @@ Saldırgan kanıtı üreten mükelleftir. Doğrulayıcı (banka, faktoring şirk
 | agg-orchestrator | Büyük kümeleri parçalayıp birleştir | Noir özyineleme: yaprak `agg_leaf_*`, birleştirici `agg_node`, sıralı liste `agg_sorted_s4096`, üst kanıt `agg_top` (`pf_agg`); `tools/pf.py`, `tools/efi/agg.py` | Mükellefin makinesi | Çalışıyor: 1'den 4096'ya kadar her sayıda fatura; son yaprak kısmen dolu olabilir |
 | verifier-offline | Kanıtı zincirsiz doğrula | `tools/pf.py verify`: doğrulama anahtarını depodaki devreden kendisi türetir, kanıtı denetler, idare anahtarını `registry/issuer_keys.json` içinde arar; `--taxpayer-cert` ile kanıttaki mükellef anahtarının verilen sertifikanın anahtarı olduğunu denetler | Doğrulayıcının makinesi | Çalışıyor |
 | verifier-onchain | Kanıtı Starknet'te doğrula | Garaga'nın ürettiği iki Cairo sözleşmesi: 10'luk kanıt için `pf_batch_k10_verifier`, birleştirilmiş kanıt için `pf_agg_top_verifier` | Starknet | Yerel Starknet ağında gerçek işlemle çalışıyor; Sepolia'ya yüklenmedi |
-| status-contract | Nullifier defteri, idare anahtar kaydı, kanıtlananın kaydı; iki kanıt türünü de kabul eder; birleştirilmiş kanıtta yaprak, birleştirici ve sıralı liste devrelerinin özetlerini kendi kaydıyla karşılaştırır, fatura sayısını kanıttan okur | Cairo (`starknet/pf_registry`) | Starknet | Testler 13/13; yerel Starknet ağında uçtan uca çalışıyor (`tools/starknet/devnet_demo.sh`); Sepolia'ya yüklenmedi |
+| status-contract | Nullifier defteri, idare anahtar kaydı, kanıtlananın kaydı; iki kanıt türünü de kabul eder, bir bağlamda yalnız birini; birleştirilmiş kanıtta yaprak, birleştirici ve sıralı liste devrelerinin özetlerini kendi kaydıyla karşılaştırır, fatura sayısını kanıttan okur | Cairo (`starknet/pf_registry`) | Starknet | Testler 16/16; yerel Starknet ağında uçtan uca çalışıyor (`tools/starknet/devnet_demo.sh`); Sepolia'ya yüklenmedi |
 | anahtar kaydı | İdare sertifikasından anahtar özeti | `tools/efi/keyhash.py` + Noir `rsa_key_hash`; `registry/issuer_keys.json` | Herkes hesaplayabilir | Çalışıyor; kayıtta yalnız 2021 test sertifikası var |
 | örnek açtırma | Seçilen faturayı aç ve karşılaştır | `tools/efi/opening.py` (özet hesabı Python'da, `tools/efi/poseidon2.py`; devrelerle karşılaştırmalı testi var) | Doğrulayıcı ile mükellef arasında | Açma ve taahhüt denetimi iki kanıt türünde de çalışıyor; idare servisiyle karşılaştırma adımı araca bağlanmadı |
 
@@ -73,16 +75,21 @@ Sabit sürümler: Noir 1.0.0, Barretenberg 6.0.0, Scarb/Cairo 2.21.0, Starknet F
 Kanonik yanıt sabit düzenli 318 bayttır: dört alan (üç UUID, bir tarih-saat) ve aralarında sabit metin. Devre bu baytları dışarıdan almaz; dört alanı karakter karakter denetler, belgeyi şablondan kendisi kurar, SHA-256 özetini alır, bu özeti yine sabit şablonlu SignedInfo'ya yerleştirir, onun özetini RSA ile doğrular. Sonuç: kanıt varsa idare tam olarak bu dört alanı imzalamıştır. Dışarıdaki kanonikleştirme hatalıysa kanıt üretilemez, ama yanlış bir şey kanıtlanamaz. SignedInfo'nun ilk 512 baytı her mesajda aynı olduğu için bu kısmın özet durumu devreye sabit olarak gömülüdür; devre yalnız son üç bloğu özetler (birim testi düz özetle karşılaştırır).
 
 ### 4.2 Mükellef isteği (`pf_efi/request.nr`)
-İstek değişken uzunluktadır (kalemler, alıcı bilgisi). Başlık sabit şablona uydurulur; böylece UUID ve `<Invoice` etiketinin başı sabit konumdadır. Etiketin içi tek geçişte taranır: devre her baytta "tırnak içinde miyim" ve "etiket hâlâ açık mı" durumunu izler ve bir özniteliği yalnız tırnak dışında başlayan ` Ad="` kalıbında tanır. Kanonik XML değerin içinde ham tırnak bırakmadığı için serbest metne yazılmış sahte bir `TotPrice="..."` öznitelik sayılamaz. Aranan yedi öznitelikten her biri tam bir kez geçmek zorundadır. Belgenin geri kalanı yalnız özetlenir. Etiket düzeyinde tek tırnak reddedilir: kanonik XML değerleri yalnız çift tırnakla sınırlar, bu kural devrenin okuyuşuyla bir XML ayrıştırıcının okuyuşunun ayrışabileceği belgeleri dışarıda bırakır.
+İstek değişken uzunluktadır (kalemler, alıcı bilgisi). Başlık sabit şablona uydurulur; böylece UUID ve `<Invoice` etiketinin başı sabit konumdadır. Etiketin içi tek geçişte taranır: devre her baytta "tırnak içinde miyim" ve "etiket hâlâ açık mı" durumunu izler ve bir özniteliği yalnız tırnak dışında başlayan ` Ad="` kalıbında tanır. Kanonik XML değerin içinde ham tırnak bırakmadığı için serbest metne yazılmış sahte bir `TotPrice="..."` öznitelik sayılamaz. Aranan altı öznitelikten her biri tam bir kez geçmek zorundadır. Belgenin geri kalanı yalnız özetlenir. Kanonik XML'de bulunmayan ve bir XML ayrıştırıcının bu taramadan farklı okuyabileceği şeyler etiket düzeyinde reddedilir: tek tırnak (değerler yalnız çift tırnakla sınırlanır), sekme ve satır sonu (öznitelikler tek boşlukla ayrılır), ad alanı bildirimi (` xmlns`; kendi ad alanı olan bir `Invoice` artık EFI faturası değildir). Belge `</Invoice></RegisterInvoiceRequest>` ile bitmek zorundadır. Sayılar tek biçimde okunur: baştaki sıfır, sıfır sıra numarası ve eksi sıfır kabul edilmez; tarihlerde ay, gün ve saat aralık içinde, saat farkı +01:00 ya da +02:00 olmalıdır.
 
 ### 4.3 Toplu ifade (`pf_efi/batch.nr`)
 K fatura için 4.1 ve 4.2 çalışır, ardından Bölüm 1'deki altı koşul denetlenir.
 
-- **Nullifier** = Poseidon2(alan etiketi, bağlam, IICSignature özeti). Bağlam doğrulayıcıya özeldir; aynı fatura iki ayrı doğrulayıcıda ilişkilendirilemez. IICSignature seçildi çünkü IIC ve FIC faturanın üstünde basılıdır; onlardan türetilen bir değeri faturanın alıcısı da hesaplayabilirdi.
-- **Açma taahhüdü** = Poseidon2(alan etiketi, IIC, FIC, sıra, tarih, tutar, tuz). 4.4'teki denetim için.
+- **Nullifier** = Poseidon2(alan etiketi, bağlam, FIC). Bağlamı doğrulayıcı seçer ve mükellefe verir; aynı fatura iki ayrı doğrulayıcıda ilişkilendirilemez. FIC seçildi çünkü onu yalnız idare verir: mükellef aynı faturayı başka baytlarla yeniden imzalayabilir ama ona ikinci bir yanıt kodu alamaz. Mükellefin yazdığı herhangi bir alandan (ilk sürümde IICSignature idi) türetilen nullifier yeniden imzalamayla değiştirilebilirdi. Bedeli: FIC faturanın üstünde basılıdır; bir faturanın FIC'ini ve bağlamı bilen kişi o faturanın bir 10'luk kanıtta sunulup sunulmadığını anlayabilir. Birleştirilmiş kanıt fatura başına nullifier yayımlamaz.
+- **Açma taahhüdü** = Poseidon2(alan etiketi, IIC, FIC, sıra, tarih, tutar, iş birimi, cihaz, tuz). İfadenin istekten aldığı her alan buradadır; 4.4'teki denetim bunların hepsini kapsar.
+- **Kapsam nullifier'ı** (birleştirilmiş kanıt) = Poseidon2(alan etiketi, bağlam, mükellef anahtarının yayımlanmayan ikinci özeti, iş birimi, cihaz, yıl). Aynı dizinin aynı bağlamda ikinci kez sunulmasını durdurur. Yayımlanan anahtar özeti yerine ikinci bir özet kullanılır, çünkü birim ve cihaz kodları faturada basılıdır; yayımlanan özetle hesaplansaydı her müşteri bir kaydın hangi işletmeye ait olduğunu bulabilirdi. Birim ve cihaz mükellefin beyanıdır; doğruluğunu örnek açtırma gösterir.
 
 ### 4.4 İçerik bağı: örnek açtırma (devre dışı protokol)
-Doğrulayıcı kanıtı gördükten sonra rastgele birkaç fatura seçer. Mükellef o faturaların açma taahhüdünün içini verir. Doğrulayıcı taahhüdü yeniden hesaplar (`opening.py check`; bunun için Noir araç zinciri gerekmez), sonra idarenin kamuya açık fatura sorgu servisine IIC ile sorar ve FIC, tutar ve sıra numarasını karşılaştırır. Açılmayan faturalar gizli kalır. Sahte içerik oranı f ise k fatura açıldığında yakalanma olasılığı 1 − (1 − f)^k'dir; faturaların yarısı sahteyse beş açma %97 yakalar. Kalıcı çözüm idarenin yanıta IIC'yi eklemesidir (tek öznitelik); bu bir politika önerisidir, yazılım işi değildir.
+Doğrulayıcı kanıtı gördükten sonra rastgele birkaç fatura seçer. Mükellef o faturaların açma taahhüdünün içini verir. Doğrulayıcı taahhüdü yeniden hesaplar (`opening.py check`; bunun için Noir araç zinciri gerekmez), sonra idarenin kamuya açık fatura sorgu servisine IIC ile sorar; yanıt kodunu, sıra numarasını, tarihi, tutarı, iş birimini ve cihazı açılan değerlerle, kayıttaki satıcıyı da mükellefin sertifikasıyla karşılaştırır. Açılmayan faturalar gizli kalır.
+
+Doğrulayıcı hangi faturayı istediğini araca kendisi söyler (`--ordinal`, `--first`, `--last`); mükellef istenen yerine başka bir faturayı açamaz. Dizi 1 numaradan başlamıyorsa doğrulayıcı önce ilk faturayı açtırır: onun sıra numarası ve yayımlanan fatura sayısı, diğer numaraların çekileceği aralığı verir.
+
+Bu denetimin gücü neyin değiştirildiğine bağlıdır. Faturaların f oranı değiştirilmişse k açma 1 − (1 − f)^k olasılıkla yakalar (yarısı sahteyse beş açma %97). Ama eşik ifadesinde tek bir fatura eşiğin tamamını taşıyabilir; N fatura içinden k tanesinin açılması onu yalnız k/N olasılıkla bulur. Bugünkü hâliyle örnek açtırma eşik ifadelerinde caydırıcıdır, kesin değildir. Planlanan çözüm denetçilerin "parasal birim örneklemesi"dir: doğrulayıcı fatura numarası yerine toplamın içinden rastgele bir tutar noktası seçer, mükellef o noktayı kapsayan faturayı açar; böylece açılma olasılığı faturanın tutarıyla orantılı olur (Bölüm 9). Kalıcı çözüm idarenin yanıta IIC'yi eklemesidir (tek öznitelik); bu bir politika önerisidir, yazılım işi değildir.
 
 10'luk kanıt her faturanın açma taahhüdünü ayrı ayrı yayımlar. Birleştirilmiş kanıt bunların hepsi üzerinde tek bir kök yayımlar; mükellef açtığı faturayla birlikte o yaprağın diğer taahhütlerini ve köke kadar olan kardeş özetleri verir, doğrulayıcı kökü yeniden hesaplar ve açılan faturanın istediği sıra numarasını taşıdığına bakar. Mükellef bunu yapabilmek için kanıtı üretirken kendisinde kalan bir kayıt dosyası saklar (`pf.py prove --keep`). Bu dosya fatura bilgisi içerir, kimseye verilmez; saklanmazsa kanıt sonradan örnekle denetlenemez.
 
@@ -95,24 +102,24 @@ Tek devreye sığmayan kümeler sıra numarasına göre en çok 10 faturalık ya
 
 | Devre | Kapı | Kanıt süresi | Bellek | Kanıt boyu | Starknet doğrulama (yerel) |
 |---|---|---|---|---|---|
-| İdare yanıtı tek başına | 60.985 | 0,5 sn | 0,2 GB | 9,2 KB | ölçülmedi |
-| Mükellef isteği tek başına (≤4096 bayt) | 421.416 | ~3 sn | 1,1 GB | 9,9 KB | ölçülmedi |
-| 1 fatura uçtan uca, gerçek 2021 test çifti | 333.179 | 2,4 sn | 0,8 GB | 9,9 KB | ölçülmedi |
-| 10 fatura tek kanıt (sentetik zincir) | 3.243.085 | 19 sn | 5,7 GB | 11,1 KB | geçti |
-| 3 fatura: kısmen dolu tek yaprak, sıralı liste, üst kanıt | yaprak 3.244.701; üst 1.469.068; sıralı liste (4096 kod) 255.262 | uçtan uca 57 sn | yaprak başına 5,7 GB | 10,7 KB | ölçülmedi |
-| 13 fatura: iki yaprak (10 + 3), bir birleştirici, sıralı liste, üst kanıt | aynı devreler; birleştirici 1.469.809 | uçtan uca 95 sn | yaprak başına 5,7 GB | 10,7 KB | ölçülmedi |
-| 25 fatura: üç yaprak (10 + 10 + 5), iki birleştirici, sıralı liste, üst kanıt | aynı devreler | uçtan uca 134 sn | yaprak başına 5,7 GB | 10,7 KB | geçti |
-| 100 fatura: on yaprak, dokuz birleştirici, sıralı liste, üst kanıt | aynı devreler | uçtan uca 411 sn | yaprak başına 5,7 GB | 10,7 KB | ölçülmedi |
+| İdare yanıtı tek başına | 60.926 | 0,5 sn | 0,2 GB | 9,2 KB | ölçülmedi |
+| Mükellef isteği tek başına (≤4096 bayt) | 429.827 | ~3 sn | 1,1 GB | 9,9 KB | ölçülmedi |
+| 1 fatura uçtan uca, gerçek 2021 test çifti | 341.623 | 2,0 sn | 1,0 GB | 9,9 KB | ölçülmedi |
+| 10 fatura tek kanıt (sentetik zincir) | 3.327.413 | 20 sn | 5-6 GB | 11,1 KB | geçti |
+| 3 fatura: kısmen dolu tek yaprak, sıralı liste, üst kanıt | yaprak 3.329.728; üst 1.468.918; sıralı liste (4096 kod) 255.262 | uçtan uca 62 sn | yaprak başına 5-6 GB | 10,7 KB | ölçülmedi |
+| 13 fatura: iki yaprak (10 + 3), bir birleştirici, sıralı liste, üst kanıt | aynı devreler; birleştirici 1.469.813 | uçtan uca 108 sn | yaprak başına 5-6 GB | 10,7 KB | ölçülmedi |
+| 25 fatura: üç yaprak (10 + 10 + 5), iki birleştirici, sıralı liste, üst kanıt | aynı devreler | uçtan uca 153 sn | yaprak başına 5-6 GB | 10,7 KB | geçti |
+| 100 fatura: on yaprak, dokuz birleştirici, sıralı liste, üst kanıt | aynı devreler | uçtan uca 427 sn | yaprak başına 5-6 GB | 10,7 KB | ölçülmedi |
 
-10 faturalık devreler 2^22 = 4.194.304 kapı sınırının yaklaşık %23 altındadır. Fatura başına maliyetin büyük kısmı isteğin özetlenmesi (2048 bayt için yaklaşık 150 bin kapı) ve iki RSA denetimidir; sınır aşılırsa süre ve bellek ikiye katlanır, bu yüzden istek boyu (2048 bayt) ve etiket penceresi (1280 bayt) bu devrede sabit tutulur. Devrenin derlenmesi yaklaşık 4 dakika, tanık üretimi 7 saniye sürer. Yerel Starknet ağında (starknet-devnet 0.10.1) iki kanıt türü de gerçek birer işlemle sunuldu ve kabul edildi: 10'luk kanıt 862 M, 25 faturalık birleştirilmiş kanıt 821 M L2 gaz (ağın varsayılan fiyatıyla 0,86 ve 0,82 STRK). Birleştirilmiş kanıtın zincir maliyeti fatura sayısıyla artmaz. Starknet belgelerindeki işlem başına sınır 1,11 milyar L2 gazdır; iki işlem de bunun altındadır. İkisinin de ikinci sunumu "invoice already presented" ile reddedildi. Açık ağda ölçüm yapılmadı.
+10 faturalık devreler 2^22 = 4.194.304 kapı sınırının yaklaşık %20 altındadır. Fatura başına maliyetin büyük kısmı isteğin özetlenmesi (2048 bayt için yaklaşık 150 bin kapı) ve iki RSA denetimidir; sınır aşılırsa süre ve bellek ikiye katlanır, bu yüzden istek boyu (2048 bayt) ve etiket penceresi (1280 bayt) bu devrede sabit tutulur. Devrenin derlenmesi yaklaşık 4 dakika, tanık üretimi 7 saniye sürer. Yerel Starknet ağında (starknet-devnet 0.10.1) iki kanıt türü de gerçek birer işlemle sunuldu ve kabul edildi: 10'luk kanıt 863 M, 25 faturalık birleştirilmiş kanıt 822 M L2 gaz (ağın varsayılan fiyatıyla 0,86 ve 0,82 STRK). Birleştirilmiş kanıtın zincir maliyeti fatura sayısıyla artmaz. Starknet belgelerindeki işlem başına sınır 1,11 milyar L2 gazdır; iki işlem de bunun altındadır. İkisinin de ikinci sunumu "invoice already presented" ile reddedildi. Açık ağda ölçüm yapılmadı.
 
 ## 5. Veri akışı
 
 1. Fatura programı her fatura için idareye bir istek gönderir, imzalı bir yanıt alır. Mükellef bu iki dosyayı saklar.
 2. `tools/efi/batch_inputs.py` dosyaları okur, imzaları ön-denetler, devre girdisini yazar. Hiçbir kimlik ya da tutar ekrana basılmaz.
 3. Noir devresi çalıştırılır; Barretenberg kanıtı üretir.
-4. Mükellef doğrulayıcıya kanıtı ve açık çıktıları verir.
-5. Doğrulayıcı kanıtı ya kendi makinesinde ya da Starknet sözleşmesinde doğrular; idare anahtar özetini kayıtlı anahtarla karşılaştırır; nullifier'ları defterde arar.
+4. Doğrulayıcı mükellefe bir bağlam değeri verir; mükellef kanıtı o bağlam için üretir ve doğrulayıcıya kanıtı ile açık çıktıları verir.
+5. Doğrulayıcı kanıtı ya kendi makinesinde ya da Starknet sözleşmesinde doğrular; kanıttaki bağlamın kendi verdiği bağlam olduğuna bakar (`pf.py verify --context`); idare anahtar özetini kayıtlı anahtarla karşılaştırır; nullifier'ları defterde arar.
 6. Doğrulayıcı örnek açtırır (4.4).
 7. İstisna hâlinde (uyuşmazlık, denetim) mükellef ilgili belgeleri açar.
 
@@ -122,7 +129,7 @@ Tek devreye sığmayan kümeler sıra numarasına göre en çok 10 faturalık ya
 |---|---|---|
 | TUNE-1 RSA yolu | Noir (`noir_rsa` + `noir-bignum`), anahtar özetiyle | Ölçüldü, çalışıyor. Cairo'daki RSA modülü de Noir kütüphanesi de bağımsız denetimden geçmemiş; denetim açık iş. |
 | TUNE-6 Kanonikleştirme | Devre dışında yapılır, devre güvenmez | Şablon yöntemi (4.1) ve tek anlamlı okuma (4.2) |
-| TUNE-7 Nullifier | Fatura başına, doğrulayıcıya özel bağlamla | Faktoringde çifte temliki yakalar, doğrulayıcılar arası ilişkilendirmeyi engeller |
+| TUNE-7 Nullifier | Fatura başına, doğrulayıcının verdiği bağlamla, idarenin yanıt kodundan (FIC) | Faktoringde çifte temliki yakalar, doğrulayıcılar arası ilişkilendirmeyi engeller; mükellefin yazdığı alanlardan türetilmez, çünkü onlar yeniden imzalanarak değiştirilebilir |
 | TUNE-9 Gizlilik kipi | Barretenberg'in gizlilik sağlayan kipi kullanılıyor | Dış iletişimde yine "minimum ifşa" denir: neyin açığa çıktığı Bölüm 1'de sayılıdır ve kütüphaneler denetimsizdir |
 | Demo boyutu | Tek devre, 10 fatura | Özyinelemesiz en ucuz yol |
 | Zincir | Starknet, Garaga doğrulayıcı + Cairo durum sözleşmesi | Çalışan tek zincir-üstü yol |
@@ -130,12 +137,18 @@ Tek devreye sığmayan kümeler sıra numarasına göre en çok 10 faturalık ya
 ## 7. Sınırlar ve açık işler
 
 - **Üretim sertifikası bilinmiyor.** Eldeki gerçek örnek 2021 test ortamından. Güncel idare sertifikası ve bir üretim çifti gerekiyor; test ortamına kendi erişimimiz için başvuru yapıldı.
-- **Okunamayan biçimler:** saat dilimi "Z" ile biten tarihler, başlığında SubseqDelivType olan istekler, 2048 bayttan uzun istekler (ayar), 1280 bayttan uzun `<Invoice` etiketi. Bunlarda kanıt üretilemez; yanlış kanıt çıkmaz.
+- **Okunamayan biçimler:** saat farkı +01:00 ya da +02:00 olmayan tarihler ("Z" dahil), başlığında SubseqDelivType olan istekler, 2048 bayttan uzun istekler (ayar), 1280 bayttan uzun `<Invoice` etiketi. Bunlarda kanıt üretilemez; yanlış kanıt çıkmaz.
 - **Henüz okunmayan alanlar:** fatura tipi, düzeltme faturasının hangi faturayı düzelttiği.
 - **Mükellefin kimliği devrede okunmaz, bilerek.** İstekteki satıcı vergi numarası mükellefin kendi yazdığı bir alandır. Kanıt mükellefi imza anahtarının özetiyle adlandırır; kimlik, sertifika kurumunun onayladığı fiskalizasyon sertifikasından gelir (`pf.py verify --taxpayer-cert`). Sertifikanın kendisinin denetimi (kök, geçerlilik, iptal) olağan X.509 araçlarıyla yapılır.
-- **Ölçek:** birleştirilmiş kanıt 1'den 4096'ya kadar her fatura sayısında çalışır (4096, sıralı liste devresinin kapasitesidir; daha büyüğü için listenin de parçalanması gerekir). Süre fatura sayısıyla doğrusal artar: ilk yaprakla birlikte yaklaşık 57 sn, sonraki her 10 fatura için yaklaşık 40 sn. Bu hızla 1.000 fatura bir saatin biraz üstünde, 4.096 fatura dört saatin üstünde sürer; bunlar hesaptır, 100 faturadan büyüğü koşulmadı (100 fatura 411 sn sürdü, hesapla uyumlu). Yapraklar sırayla üretildiği için bellek fatura sayısıyla artmaz; yapraklar birbirinden bağımsızdır, birden çok makineye dağıtılabilir. Not: iç kanıt denetimi tanık üretiminde değil kanıt üretiminde yapılır; birleştirme testleri bu yüzden hep kanıt üretip doğrular.
+- **Ölçek:** birleştirilmiş kanıt 1'den 4096'ya kadar her fatura sayısında çalışır (4096, sıralı liste devresinin kapasitesidir; daha büyüğü için listenin de parçalanması gerekir). Süre fatura sayısıyla doğrusal artar: ilk yaprakla birlikte yaklaşık 62 sn, sonraki her 10 fatura için 40-45 sn. Bu hızla 1.000 fatura bir saatin biraz üstünde, 4.096 fatura dört saatin üstünde sürer; bunlar hesaptır, 100 faturadan büyüğü koşulmadı (100 fatura 427 sn sürdü, hesapla uyumlu). Yapraklar sırayla üretildiği için bellek fatura sayısıyla artmaz; yapraklar birbirinden bağımsızdır, birden çok makineye dağıtılabilir. Not: iç kanıt denetimi tanık üretiminde değil kanıt üretiminde yapılır; birleştirme testleri bu yüzden hep kanıt üretip doğrular.
 - **Portaldan kesilen faturalar:** idarenin kendi portalından kesilen faturalarda mükellefin elinde imzalı dosya oluşmaz; bu faturalar kapsam dışıdır.
-- **Denetim:** devreler ve kullanılan kütüphaneler bağımsız incelemeden geçmedi.
+- **Bağlam doğrulayıcının işidir.** Nullifier'lar bağlama bağlıdır; başka bağlam başka nullifier demektir. Kanıtın taşıdığı bağlamı sorgusuz kabul eden bir doğrulayıcı tekrar sunuma karşı korunmaz. Defter sözleşmesi bağlamı kaydeder ama bir doğrulayıcının hangi bağlamı verdiğini bilemez; her doğrulayıcı yalnız kendi bağlamındaki kayıtlara bakar. Bir bağlam tek tür kanıt alır (10'luk ya da birleştirilmiş), çünkü iki türün nullifier'ları birbiriyle karşılaştırılamaz.
+- **Kapsam nullifier'ı örnek açtırma kadar güçlüdür.** Birim ve cihaz kodlarını mükellef yazar; kodları değiştirip yeniden imzalayan mükellef başka bir kapsam nullifier'ı elde eder, ama açılan ilk faturada idare kaydıyla çelişir. İki sertifikası olan mükellef iki ayrı anahtar özetiyle sunabilir; doğrulayıcı sertifikadaki vergi numarasına göre kendi kaydını tutmalıdır.
+- **Gizlilik sınırları:** 10'luk kanıtta bir faturanın FIC'ini ve bağlamı bilen kişi o faturanın sunulduğunu anlar. Mükellefin sertifikasını elinde tutan (idare, sertifika kurumu, yazılım sağlayıcı, kimliğin açıldığı doğrulayıcı) o mükellefin bütün kayıtlarını ilişkilendirebilir, çünkü anahtar özeti tuzsuzdur. Zincirdeki kayıt yılı, eşiği ve fatura sayısını herkese gösterir.
+- **Zincirde gönderen:** kanıt gönderen hesaba bağlı değildir; işlemi gören biri aynı kanıtı önce gönderebilir. Kayıttaki gönderen hesap bilgi içindir, mükellefi göstermez.
+- **Test anahtarı üretim anahtarı değildir.** Kayıtlı tek gerçek idare anahtarı test ortamına aittir; o ortamda uydurma faturalara yanıt alınabilir. `pf.py verify` üretim anahtarı olmayan bir anahtarla doğrulanan kanıtta 0 dışı çıkış kodu verir.
+- **Denenemeyen bir nokta:** iç içe kanıtlarda son eşleme (pairing) denetiminin doğrulayıcıda yapıldığı varsayımı, bozuk bir iç kanıtla uçtan uca denenmedi; Barretenberg'in kanıtlayıcısı böyle bir kanıtı üretmeyi kendisi reddediyor, bu yüzden deneme için değiştirilmiş bir kanıtlayıcı gerekir.
+- **Denetim:** devreler ve kullanılan kütüphaneler bağımsız incelemeden geçmedi. Kasım 2026'da ekip içinde devreleri yazmamış bir gözle yapılan karşı inceleme iki açık buldu (nullifier'ın mükellefin yazdığı bir alandan türetilmesi; birim ve cihazın hiçbir denetime bağlı olmaması); ikisi de kapatıldı ve testleri eklendi (`tools/efi/test_replay.py`).
 
 ## 8. Test durumu
 
@@ -143,25 +156,29 @@ Depoda yalnız sentetik veri vardır; gerçek örneklerle denemeler depo dışı
 
 | Hedef | Test | Sonuç |
 |---|---|---|
-| `pf_xmldsig` | Birim testleri (base64, UUID, tarih, tutar, kod, onaltılık tablo, SignedInfo özetinin düz özetle karşılaştırması) | 17/17 |
-| `pf_efi` | İstek okuyucu (sahte öznitelik, tekrar, eksik, kapanmayan etiket, tek tırnak), kısmen dolu devrede sayılan ve sayılmayan yuvalar, birleştirme yardımcıları (sıralı liste, dilim birleştirme) | 21/21 |
+| `pf_xmldsig` | Birim testleri (base64, UUID, tarih ve aralıkları, saat farkı, tutar, baştaki sıfır, kod, onaltılık tablo, SignedInfo özetinin düz özetle karşılaştırması) | 27/27 |
+| `pf_efi` | İstek okuyucu (sahte öznitelik, tekrar, eksik, kapanmayan etiket, tek tırnak, sekme ve satır sonu, ad alanı bildirimi, kapanış etiketleri, kısa imzalanmış belge), kısmen dolu devrede sayılan ve sayılmayan yuvalar, birleştirme yardımcıları (sıralı liste, dilim birleştirme, kapsam) | 31/31 |
 | İdare yanıtı | Kabul/ret: sahte imza, yanlış anahtar, bozuk alan | 7/7 |
-| Mükellef isteği | Kabul/ret + "tutar gibi görünen metin" fark testi | 9/9 |
+| Mükellef isteği | Kabul/ret + "tutar gibi görünen metin" fark testi; mükellefin gerçekten imzaladığı ama kabul edilmemesi gereken belgeler (çift tutar, eksik sıra, bozuk tutar, kısa imza, ad alanı, sekmeyle gizlenmiş ikinci tutar, baştaki sıfır, başka saat farkı) | 14/14 |
+| Yeniden imzalama | Aynı fatura dört ayrı biçimde imzalanır: IICSignature, cihaz ya da tutar değişse de nullifier aynı kalır; cihaz ya da tutar değişince açma taahhüdü değişir; başka bir yanıt başka nullifier verir | 6/6 |
 | 1 fatura | Kabul/ret: kopuk bağ, eşik altı, yanlış yıl, sahte imzalar, tutar değişikliği | 8/8 |
 | 10 fatura | Kabul/ret: boşluk, yanıtın iki kez kullanımı, karışık birim/cihaz ve yukarıdakiler | 12/12 |
 | Örnek açtırma | Doğru açma eşleşir; tutarı, sırayı ya da FIC'i değiştirilmiş açma eşleşmez | 4/4 |
 | Özet fonksiyonu | Araçların Python Poseidon2'si devrelerle karşılaştırılır: referans vektör, 0 ile 10 arası eleman sayıları, açma taahhüdü | 13/13 |
-| Birleştirme (1'lik yapraklar) | Kanıt üreterek: 1, 2 ve 3 yapraklı geçerli ağaçlar; yanıtın iki yaprakta kullanımı; bunu baştan sahte sıralı listeyle gizleme; yapraklar arası boşluk; başka cihaz; eşik altı; başka denetim değeriyle kanıtlanmış yaprak; sonradan değiştirilmiş özet; yanlış yaprak devresi özeti; yaprağın birleştirici diye sunulması; tek yuvalı yaprağın iki fatura taşıdığının söylenmesi. Geçerli üç yapraklı kanıtta örnek açtırma: iki fatura açılır, tutarı değiştirilmiş ya da başka yola bağlanmış açma reddedilir | 13/13 ve 4/4 |
-| Birleştirme (10'luk yapraklar) | Kanıt üreterek: geçerli 20, 23 (10 + 10 + 3) ve 7 fatura; boş yuvanın fatura sayılması; sıfır ya da 11 fatura taşıdığı söylenen yaprak; yapraklar arasında dört faturanın atlanması; yanıtın iki yaprakta kullanımı ve sahte sıralı liste. 23 ve 7 faturalık kanıtlarda örnek açtırma | 8/8 ve 6/6 |
-| Starknet defteri | Gerçek 10'luk ve 20'lik kanıtlarla: kayıt, ikinci sunum, kayıtsız ya da kaldırılmış idare anahtarı, yalnız sahip anahtar ekler, değiştirilmiş kanıt, birleştirilmiş kanıtın 10'luk girişten sunulması, tanınmayan yaprak, birleştirici ya da sıralı liste devresi | 13/13 |
+| Birleştirme (1'lik yapraklar) | Kanıt üreterek: 1, 2 ve 3 yapraklı geçerli ağaçlar; yanıtın iki yaprakta kullanımı; bunu baştan sahte sıralı listeyle gizleme; yapraklar arası boşluk; başka cihaz; eşik altı; başka denetim değeriyle kanıtlanmış yaprak; sonradan değiştirilmiş özet; yanlış yaprak devresi özeti; yaprağın birleştirici diye sunulması; tek yuvalı yaprağın iki fatura taşıdığının söylenmesi | 13/13 |
+| Birleştirme (10'luk yapraklar) | Kanıt üreterek: geçerli 20, 23 (10 + 10 + 3) ve 7 fatura; boş yuvanın fatura sayılması; sıfır ya da 11 fatura taşıdığı söylenen yaprak; yapraklar arasında dört faturanın atlanması; yanıtın iki yaprakta kullanımı ve sahte sıralı liste | 8/8 |
+| Birleştirilmiş kanıtta örnek açtırma | Üç geçerli kanıtta (3, 23 ve 7 fatura): istenen fatura açılır; tutarı ya da cihaz kodu değiştirilmiş, başka sıra numarası için sunulmuş ya da başka yola bağlanmış açma reddedilir; ilk ve son fatura ilk ve son olarak kabul edilir, ortadaki ya da ters uçtaki fatura kabul edilmez | 34/34 |
+| Starknet defteri | Gerçek 10'luk ve 20'lik kanıtlarla: kayıt, ikinci sunum, kayıtsız ya da kaldırılmış idare anahtarı, yalnız sahip anahtar ekler, değiştirilmiş kanıt, birleştirilmiş kanıtın 10'luk girişten sunulması, tanınmayan yaprak, birleştirici ya da sıralı liste devresi; aynı bağlamda öteki tür kanıtın reddi (iki yönde) | 16/16 |
 | Yerel ağda uçtan uca | Sözleşmeleri yükle ve kur; 10'luk ve 25 faturalık kanıt için: idare anahtarını kaydet, kanıtı sun, aynı kanıtı yeniden sun (reddedilir). Tek komut, yaklaşık 4 dakika | geçti |
-| Uçtan uca araç | Gerçek 2021 çiftinde `prove` -> `verify`: geçerli, idare anahtarı kayıtlı; sentetik 10'lukta geçerli ama "anahtar kayıtsız" uyarısı; değiştirilmiş açık değerde geçersiz; 3, 13, 25 ve 100 sentetik faturayla `prove --keep` -> `verify` -> son faturanın örnek açtırması | elle koşuldu |
+| Uçtan uca araç | Gerçek 2021 çiftinde `prove` -> `verify`: geçerli, idare anahtarı kayıtlı ama üretim anahtarı değil uyarısı, sertifika eşleşiyor, başka bağlamla ret; sentetik 10'lukta geçerli ama "anahtar kayıtsız" uyarısı; değiştirilmiş açık değerde geçersiz; 3, 13, 25 ve 100 sentetik faturayla `prove --keep` -> `verify` -> son faturanın örnek açtırması | elle koşuldu |
 
 ## 9. Sıradaki adımlar
 
 1. Doğrulayıcıları ve defter sözleşmesini Starknet Sepolia'ya yüklemek ve gerçek ücreti ölçmek.
 2. Test ortamından kendi kestiğimiz 10 ardışık gerçek faturayla demo.
 3. Örnek açtırmada idarenin kamu servisiyle karşılaştırma adımı.
-4. Eksik alanlar ve biçimler (Bölüm 7).
-5. 4096'dan büyük kümeler (sıralı listenin de parçalanması) ve yaprakların birden çok makinede üretilmesi.
-6. Bağımsız inceleme.
+4. Eşik ifadeleri için parasal birim örneklemesi: açma taahhütlerine kümülatif toplamı eklemek, böylece doğrulayıcının seçtiği tutar noktasını kapsayan faturanın açılmasını zorunlu kılmak (4.4). Eksi tutarlı faturalar için ayrı kural gerekir.
+5. Eksik alanlar ve biçimler (Bölüm 7).
+6. 4096'dan büyük kümeler (sıralı listenin de parçalanması) ve yaprakların birden çok makinede üretilmesi.
+7. İç içe kanıtlarda son eşleme denetiminin bozuk bir iç kanıtla uçtan uca denenmesi (Bölüm 7).
+8. Bağımsız inceleme.

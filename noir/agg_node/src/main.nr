@@ -12,7 +12,7 @@ fn main(
     vks: [UltraHonkVerificationKey; 2],
     proofs: [UltraHonkZKProof; 2],
     is_leaf: [bool; 2],
-    runs: [[Field; 11]; 2],
+    runs: [[Field; 12]; 2],
     blinds: [Field; 2],
     blind_out: Field,
     taxpayer_key_hash: Field,

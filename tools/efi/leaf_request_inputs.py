@@ -135,7 +135,8 @@ def signed_xml(key, req) -> bytes:
 # Negative cases. "signed-*" are documents the signer really signed and the circuit must still
 # refuse; the others are forgeries by the prover.
 TAMPERS = ("total-flip", "sig-flip", "wrong-key", "signed-dup-total", "signed-no-ordinal",
-           "signed-bad-amount", "signed-truncated")
+           "signed-bad-amount", "signed-truncated", "signed-cut-after-tag", "signed-namespace",
+           "signed-tab-total", "signed-leading-zero", "signed-other-offset")
 
 
 def synthetic(tamper, rng):
@@ -156,10 +157,20 @@ def synthetic(tamper, rng):
         signed_doc = re.sub(rb' TotPrice="(\d+)\.(\d\d)"', rb' TotPrice="\1,\2"', doc, count=1)
     elif tamper == "signed-truncated":
         signed_doc, doc_len = doc[:TAG_START + 300], TAG_START + 300  # signature covers a prefix only
+    elif tamper == "signed-cut-after-tag":
+        signed_doc, doc_len = doc[:tag_end + 1], tag_end + 1  # the start tag and nothing after it
+    elif tamper == "signed-namespace":
+        signed_doc = doc[:tag_end] + b' xmlns="urn:x"' + doc[tag_end:]  # no longer the EFI element
+    elif tamper == "signed-tab-total":
+        signed_doc = doc[:tag_end] + b'\tTotPrice="0.01"' + doc[tag_end:]  # a parser sees two totals
+    elif tamper == "signed-leading-zero":
+        signed_doc = re.sub(rb' TotPrice="', b' TotPrice="0', doc, count=1)
+    elif tamper == "signed-other-offset":
+        signed_doc = re.sub(rb'( IssueDateTime="[^"]{19})\+01:00', rb"\1+13:00", doc, count=1)
     signature = int.from_bytes(sign(key, signed_info(b"Request", signed_doc)), "big")
     modulus = modulus_of(key)
 
-    witness_doc = doc if tamper == "signed-truncated" else signed_doc
+    witness_doc = doc if tamper in ("signed-truncated", "signed-cut-after-tag") else signed_doc
     if tamper == "total-flip":
         m = re.search(rb' TotPrice="(\d)', doc)
         flipped = b"1" if m.group(1) != b"1" else b"2"

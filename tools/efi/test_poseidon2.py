@@ -47,6 +47,8 @@ def main():
         "ordinal": 4711,
         "issue_date_time": "2026-03-09T14:05:59+01:00",
         "total": "-1234.56",
+        "business_unit": "ab123cd456",
+        "device": "ef789gh012",
         "salt": hex(secrets.randbits(248)),
     }
     report("opening commitment equals the open_invoice circuit", opening.recompute(o) == opening.recompute_in_circuit(o))

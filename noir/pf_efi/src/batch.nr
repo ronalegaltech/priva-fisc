@@ -14,13 +14,21 @@
 // Published: hash of T, hash of A, whether the batch starts at ordinal 1, one nullifier per invoice
 // bound to the public `context`, and one blinded opening commitment per invoice.
 //
+// The nullifier of an invoice is derived from its receipt code (FIC) and the context, and from
+// nothing the taxpayer writes: the taxpayer can sign the same invoice again with other bytes, but
+// cannot obtain another receipt code for it. Whoever knows an invoice's receipt code (it is printed
+// on the invoice) and the context can therefore tell whether that invoice was presented there.
+//
 // NOT proved (state it wherever this proof is shown):
 //   * that the authority saw the CONTENT of request_i. Its signature covers the UUID and FIC only.
 //     A taxpayer who registers cheap invoices and signs different content under the same UUIDs
 //     passes this circuit. The defence is outside: after seeing the proof the verifier picks a few
 //     invoices at random; for each the prover reveals the preimage of its opening commitment
-//     (IIC, FIC, ordinal, issue time, total, salt) and the verifier compares it with what the
-//     authority's public invoice-check service returns for that IIC. Unopened invoices stay hidden.
+//     (IIC, FIC, ordinal, issue time, total, business unit, device, salt) and the verifier compares
+//     it with what the authority's public invoice-check service returns for that IIC, and the
+//     seller in that record with the taxpayer's certificate. Unopened invoices stay hidden.
+//     Everything the statement takes from a request (ordinal, year, total, unit, device) is the
+//     taxpayer's word until an opening confirms it; that is why all of it is in the commitment.
 //   * that no invoices exist after the last ordinal, or on other devices of the same taxpayer.
 //
 // A circuit with K slots can carry fewer than K invoices: `count` says how many slots, from the
@@ -30,14 +38,14 @@
 
 use crate::request::request_fields_and_digest;
 use crate::response::response_fields_and_digest;
-use pf_xmldsig::{assert_rsa_sha256, rsa_key_hash};
+use pf_xmldsig::{assert_rsa_sha256, rsa_key_hash, rsa_key_tag};
 use poseidon::poseidon2::Poseidon2;
 
 // Domain separators: ASCII "PF-NULLIF1", "PF-OPENING".
 global DOMAIN_NULLIFIER: Field = 0x50462d4e554c4c494631;
 global DOMAIN_OPENING: Field = 0x50462d4f50454e494e47;
 
-/// Opening commitment of one invoice. Revealing these eight values lets anyone recompute it.
+/// Opening commitment of one invoice. Revealing these ten values lets anyone recompute it.
 pub fn opening_commitment(
     iic: Field,
     fic: Field,
@@ -46,11 +54,16 @@ pub fn opening_commitment(
     issue_tz: Field,
     total_negative: Field,
     total_cents: Field,
+    unit: Field,
+    device: Field,
     salt: Field,
 ) -> Field {
     Poseidon2::hash(
-        [DOMAIN_OPENING, iic, fic, ordinal, issue_local_ts, issue_tz, total_negative, total_cents, salt],
-        9,
+        [
+            DOMAIN_OPENING, iic, fic, ordinal, issue_local_ts, issue_tz, total_negative, total_cents,
+            unit, device, salt,
+        ],
+        11,
     )
 }
 
@@ -59,6 +72,7 @@ pub fn opening_commitment(
 pub struct BatchCore<let K: u32> {
     pub count: u32,
     pub taxpayer_key_hash: Field,
+    pub taxpayer_key_tag: Field,
     pub issuer_key_hash: Field,
     pub first_ordinal: u64,
     pub last_ordinal: u64,
@@ -131,6 +145,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
     year: u32,
 ) -> BatchCore<K> {
     let taxpayer_key_hash = rsa_key_hash(taxpayer_modulus);
+    let taxpayer_key_tag = rsa_key_tag(taxpayer_modulus);
     let issuer_key_hash = rsa_key_hash(issuer_modulus);
 
     let mut fics: [Field; K] = [0; K];
@@ -163,7 +178,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
 
         if i < count {
             fics[i] = resp.fic;
-            nullifiers[i] = Poseidon2::hash([DOMAIN_NULLIFIER, context, req.iic_signature_hash], 3);
+            nullifiers[i] = Poseidon2::hash([DOMAIN_NULLIFIER, context, resp.fic], 3);
             openings[i] = opening_commitment(
                 req.iic,
                 resp.fic,
@@ -172,6 +187,8 @@ pub fn check_invoices<let K: u32, let M: u32>(
                 req.issue_tz,
                 req.total_negative as Field,
                 req.total_cents as Field,
+                req.busin_unit_code,
+                req.tcr_code,
                 salts[i],
             );
         }
@@ -182,6 +199,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
     BatchCore {
         count,
         taxpayer_key_hash,
+        taxpayer_key_tag,
         issuer_key_hash,
         first_ordinal,
         last_ordinal,
