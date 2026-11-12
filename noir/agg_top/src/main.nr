@@ -2,7 +2,7 @@
 //
 // Public inputs : threshold_cents, context, year, leaf_vk_hash, node_vk_hash, sorted_vk_hash
 // Public outputs: (taxpayer key hash, authority key hash, starts at ordinal 1, number of invoices,
-//                 nullifier-chain root, opening-chain root, scope nullifier)
+//                 nullifier-chain root, root of the opening tree, scope nullifier)
 
 use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof};
 use pf_agg::prove_top;

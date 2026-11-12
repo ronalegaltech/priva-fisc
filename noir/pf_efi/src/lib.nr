@@ -4,7 +4,9 @@
 //   response  authority-signed RegisterInvoiceResponse -> receipt facts
 //   batch     K invoices, each with its receipt, as one statement
 //   agg       leaves of K invoices and a root over them, for more than one circuit can hold
+//   spot      where one opened invoice sits under the root of an aggregated proof
 pub mod request;
 pub mod response;
 pub mod batch;
 pub mod agg;
+pub mod spot;

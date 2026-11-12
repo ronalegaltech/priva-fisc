@@ -68,7 +68,8 @@ pub fn opening_commitment(
 }
 
 /// What the first `count` of K checked invoices amount to. Private: nothing here is published as
-/// is. Entries of the three lists from `count` on are zero.
+/// is. Entries of the four lists from `count` on are zero. `plus` holds each invoice's total when
+/// it is positive and zero otherwise.
 pub struct BatchCore<let K: u32> {
     pub count: u32,
     pub taxpayer_key_hash: Field,
@@ -83,6 +84,7 @@ pub struct BatchCore<let K: u32> {
     pub fics: [Field; K],
     pub nullifiers: [Field; K],
     pub openings: [Field; K],
+    pub plus: [Field; K],
 }
 
 /// Ordinal, place and amount of one invoice, as read from its signed request.
@@ -151,6 +153,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
     let mut fics: [Field; K] = [0; K];
     let mut nullifiers: [Field; K] = [0; K];
     let mut openings: [Field; K] = [0; K];
+    let mut plus: [Field; K] = [0; K];
     let mut lines: [Line; K] = [Line { ordinal: 0, unit: 0, device: 0, negative: false, cents: 0 }; K];
 
     for i in 0..K {
@@ -191,6 +194,9 @@ pub fn check_invoices<let K: u32, let M: u32>(
                 req.tcr_code,
                 salts[i],
             );
+            if !req.total_negative {
+                plus[i] = req.total_cents as Field;
+            }
         }
     }
 
@@ -210,6 +216,7 @@ pub fn check_invoices<let K: u32, let M: u32>(
         fics,
         nullifiers,
         openings,
+        plus,
     }
 }
 

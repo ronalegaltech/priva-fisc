@@ -2,14 +2,16 @@
 """Spot-check ("örnek açtırma") helper.
 
 A batch proof publishes one blinded opening commitment per invoice; an aggregated proof publishes
-one root over all of them. After seeing the proof the verifier names a few invoice positions; for
-each one the prover reveals the commitment's preimage (and, for an aggregated proof, the hashes
-that lead from it to the root) and the verifier recomputes. The verifier then compares the revealed
-values with what the tax authority's public invoice-check service returns for that IIC (not done by
-this tool: querying the authority is a deliberate, separate step).
+one root over all of them. After seeing the proof the verifier asks for a few invoices; for each
+one the prover reveals the commitment's preimage and the verifier recomputes the commitment. For an
+aggregated proof the prover adds a small proof (noir/spot_open_k*) that the commitment sits under
+the published root and where, without showing the rest of the tree. The verifier then compares the
+revealed values with what the tax authority's public invoice-check service returns for that IIC
+(not done by this tool: querying the authority is a deliberate, separate step).
 
-  reveal --record RECORD.json --index I --out OPENING.json                    (prover side)
-  check  --opening OPENING.json --proof DIR (--ordinal N | --first | --last)  (verifier side)
+  draw                                                                         (verifier side)
+  reveal --record RECORD.json (--index I | --point R) --out OPENING.json       (prover side)
+  check  --opening OPENING.json --proof DIR (--ordinal N | --first | --last | --point R)   (verifier)
 
 RECORD.json is the file written by `pf.py prove --keep`; it stays with the prover. I counts the
 invoices from 0 in the order they were proved.
@@ -19,6 +21,12 @@ The verifier says which invoice it asked for, so that the prover cannot answer w
 it to be the first or the last invoice the proof covers. When a proof does not start at ordinal 1
 the verifier asks for the first invoice first: its ordinal and the published count give the range
 to draw the other ordinals from.
+
+--point R (aggregated proofs) asks for an invoice by amount instead of by number. `draw` prints a
+random R; it stands for a point of the sum of all positive totals, and the prover must open the
+invoice whose share of that sum contains the point. Invoices are then opened with probability
+proportional to their amount: one invoice that carries most of a total is asked for most of the
+time, which asking by number would not do.
 
 What the verifier still has to do by hand with an opening that matched: look the invoice up at the
 tax authority by its IIC, compare receipt code, ordinal, time, total, business unit and device with
@@ -35,6 +43,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -111,6 +120,14 @@ def field_values(o):
     }
 
 
+def positive_cents(o):
+    """An opened invoice's total in cents when it is positive, else 0."""
+    total = o["total"]
+    if total.startswith("-") or total == "0":
+        return 0
+    return int(total.replace(".", ""))
+
+
 def recompute(o):
     """The opening commitment of these values, as the circuits compute it."""
     values = field_values(o)
@@ -134,42 +151,82 @@ def recompute_in_circuit(o):
     return int(m.group(1), 16)
 
 
-def reveal_from_record(record_path, index):
-    """Opening of invoice `index` from the prover's record, with its position and, for an
-    aggregated proof, the path to the root."""
+def reveal_from_record(record_path, index=None, point=None):
+    """Opening of one invoice from the prover's record: the one at position `index`, or, when only
+    `point` is given, the one that covers that draw. For an aggregated proof the opening comes with
+    a proof of where it sits under the published root (made for the draw `point`, 0 if none)."""
+    import agg  # here, not at the top: agg.py uses this module too
     with open(record_path) as f:
         record = json.load(f)
+    if "tree" not in record:
+        if index is None:
+            raise ValueError("a batch proof is opened by position")
+        if not 0 <= index < len(record["invoices"]):
+            raise ValueError("no invoice at this position")
+        return dict(record["invoices"][index], position=index)
+
+    leaves, tree = record["leaves"], record["tree"]
+    r = point or 0
+    if index is None:
+        # The invoice whose range [sum before it, sum before it + its total) holds the point.
+        target = (r * tree["sum"]) >> 64
+        index, before = None, 0
+        amounts = [p for leaf in leaves for p in leaf["plus"][:leaf["count"]]]
+        for i, p in enumerate(amounts):
+            if before <= target < before + p:
+                index = i
+                break
+            before += p
+        if index is None:
+            raise ValueError("no invoice with a positive total")
     if not 0 <= index < len(record["invoices"]):
         raise ValueError("no invoice at this position")
-    o = dict(record["invoices"][index])
-    o["position"] = index
-    if "tree" not in record:
-        return o
-    # Which leaf, and which slot in it.
     leaf_index, slot = 0, index
-    while slot >= record["leaves"][leaf_index]["count"]:
-        slot -= record["leaves"][leaf_index]["count"]
+    while slot >= leaves[leaf_index]["count"]:
+        slot -= leaves[leaf_index]["count"]
         leaf_index += 1
 
     def climb(node):
-        """Sibling hashes from the leaf up to `node`, or None if the leaf is not below it."""
+        """(our node is the left child, sibling hash, sibling sum) from the leaf up to `node`."""
         if "leaf" in node:
             return [] if node["leaf"] == leaf_index else None
         below = climb(node["left"])
         if below is not None:
-            return below + [["right", node["right"]["h"]]]
+            return below + [(True, int(node["right"]["h"], 16), node["right"]["sum"])]
         below = climb(node["right"])
         if below is not None:
-            return below + [["left", node["left"]["h"]]]
+            return below + [(False, int(node["left"]["h"], 16), node["left"]["sum"])]
         return None
 
-    o["path"] = {"leaf": record["leaves"][leaf_index]["openings"], "slot": slot, "siblings": climb(record["tree"])}
+    path = climb(tree)
+    depth = 12  # MAX_DEPTH in noir/pf_efi/src/spot.nr
+    if len(path) > depth:
+        raise ValueError("the tree is deeper than the spot-check circuit follows")
+    pad = depth - len(path)
+    leaf = leaves[leaf_index]
+    openings = [int(v, 16) for v in leaf["openings"]]
+    flags = lambda values: "[" + ", ".join("true" if v else "false" for v in values) + "]"  # noqa: E731
+    text = f"openings = {agg.hexlist(openings)}\nplus = {agg.hexlist(leaf['plus'])}\nslot = \"{slot}\"\n"
+    text += f"used = {flags([True] * len(path) + [False] * pad)}\n"
+    text += f"node_is_left = {flags([p[0] for p in path] + [False] * pad)}\n"
+    text += f"sibling = {agg.hexlist([p[1] for p in path] + [0] * pad)}\n"
+    text += f"sibling_sum = {agg.hexlist([p[2] for p in path] + [0] * pad)}\n"
+    text += f'root = "{hex(agg.openings_root(int(tree["h"], 16), tree["sum"]))}"\n'
+    text += f'commitment = "{hex(openings[slot])}"\namount = "{leaf["plus"][slot]}"\nr = "{r}"\n'
+    name = f"spot_open_k{len(openings)}"
+    with tempfile.TemporaryDirectory() as tmp:
+        agg.prove(name, text, tmp, "evm")
+        proof = open(os.path.join(tmp, "proof"), "rb").read()
+        public = open(os.path.join(tmp, "public_inputs"), "rb").read()
+    o = dict(record["invoices"][index], position=index)
+    o["proof"] = {"leaf_size": len(openings), "proof": proof.hex(), "public_inputs": public.hex()}
     return o
 
 
-def check_against_proof(o, proof_dir, ordinal=None, edge=None):
+def check_against_proof(o, proof_dir, ordinal=None, edge=None, point=None):
     """True if the opening is one the proof in `proof_dir` commits to and is the invoice asked for:
-    the one with this `ordinal`, or the "first" / "last" invoice of the proof (`edge`)."""
+    the one with this `ordinal`, the "first" / "last" invoice of the proof (`edge`), or the one
+    that covers the draw `point`."""
     import agg  # here, not at the top: agg.py uses this module too
     if ordinal is not None and o.get("ordinal") != ordinal:
         return False
@@ -179,39 +236,38 @@ def check_against_proof(o, proof_dir, ordinal=None, edge=None):
         # Batch proof: threshold, context, year, two key hashes, a flag, K nullifiers, K commitments.
         k = (len(values) - 6) // 2
         position = o.get("position", -1)
-        if edge and position != (0 if edge == "first" else k - 1):
+        if point is not None or (edge and position != (0 if edge == "first" else k - 1)):
             return False
         return 0 <= position < k and values[6 + k + position] == commitment
-    path = o.get("path")
-    if not path or len(path["leaf"]) not in agg.LEAF_SIZES or not 0 <= path["slot"] < len(path["leaf"]):
+    located = o.get("proof")
+    if not located or located.get("leaf_size") not in agg.LEAF_SIZES:
         return False
-    leaf = [int(v, 16) for v in path["leaf"]]
-    slot = path["slot"]
-    if leaf[slot] != commitment:
+    public = bytes.fromhex(located["public_inputs"])
+    if len(public) != 7 * 32:
         return False
-    sides = [side for side, _ in path["siblings"]]
-    # The first invoice sits in slot 0 of the leftmost leaf: every sibling on the way up is on the
-    # right. The last one is the last used slot of the rightmost leaf (unused slots hold zero).
-    if edge == "first" and (slot != 0 or any(side != "right" for side in sides)):
+    # (root, commitment, amount, draw) as given to the circuit, then its three answers.
+    root, shown, amount, draw, covers, is_first, is_last = (
+        int.from_bytes(public[i:i + 32], "big") for i in range(0, len(public), 32))
+    if root != int(agg.decode(values)["opening_root"], 16) or shown != commitment or amount != positive_cents(o):
         return False
-    if edge == "last" and (any(leaf[slot + 1:]) or any(side != "left" for side in sides)):
+    if edge == "first" and is_first != 1 or edge == "last" and is_last != 1:
         return False
-    h = agg.slot_hash(leaf)
-    for side, sibling in path["siblings"]:
-        if side not in ("left", "right"):
-            return False
-        h = agg.pair_hash(int(sibling, 16), h) if side == "left" else agg.pair_hash(h, int(sibling, 16))
-    return h == int(agg.decode(values)["opening_root"], 16)
+    if point is not None and (draw != point or covers != 1):
+        return False
+    return agg.verify_proof(f"spot_open_k{located['leaf_size']}", bytes.fromhex(located["proof"]), public)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("draw")
     r = sub.add_parser("reveal")
     source = r.add_mutually_exclusive_group(required=True)
     source.add_argument("--record")
     source.add_argument("--prover")
-    r.add_argument("--index", type=int, required=True)
+    which = r.add_mutually_exclusive_group(required=True)
+    which.add_argument("--index", type=int)
+    which.add_argument("--point", type=int)
     r.add_argument("--out", required=True)
     c = sub.add_parser("check")
     c.add_argument("--opening", required=True)
@@ -222,22 +278,31 @@ def main():
     asked.add_argument("--ordinal", type=int)
     asked.add_argument("--first", action="store_true")
     asked.add_argument("--last", action="store_true")
+    asked.add_argument("--point", type=int)
     a = ap.parse_args()
-    if a.cmd == "check" and a.proof and a.ordinal is None and not (a.first or a.last):
-        ap.error("with --proof, say which invoice was asked for: --ordinal N, --first or --last")
+    if a.cmd == "draw":
+        print(secrets.randbits(64))
+        return 0
+    if a.cmd == "check" and a.proof and a.ordinal is None and a.point is None and not (a.first or a.last):
+        ap.error("with --proof, say which invoice was asked for: --ordinal N, --first, --last or --point R")
+    if a.cmd == "reveal" and a.prover and a.index is None:
+        ap.error("a batch Prover file is opened by --index")
 
     if a.cmd == "reveal":
-        o = reveal_from_record(a.record, a.index) if a.record else reveal(a.prover, a.index)
+        try:
+            o = reveal_from_record(a.record, a.index, a.point) if a.record else reveal(a.prover, a.index)
+        except ValueError as e:
+            sys.exit(f"cannot open: {e}")
         with open(a.out, "w") as f:
             json.dump(o, f, indent=1)
-        print(f"wrote opening for invoice position {a.index}")
+        print(f"wrote opening for invoice position {o.get('position', a.index)}")
         return 0
     with open(a.opening) as f:
         o = json.load(f)
     edge = "first" if a.first else "last" if a.last else None
     try:
         if a.proof:
-            ok = check_against_proof(o, a.proof, ordinal=a.ordinal, edge=edge)
+            ok = check_against_proof(o, a.proof, ordinal=a.ordinal, edge=edge, point=a.point)
         else:
             ok = recompute(o) == int(a.commitment, 16) and (a.ordinal is None or o.get("ordinal") == a.ordinal)
     except (KeyError, ValueError, TypeError):

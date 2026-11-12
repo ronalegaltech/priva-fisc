@@ -71,7 +71,9 @@ TAMPERS = (
 )
 
 
-def synthetic(k, tamper, start, threshold):
+def synthetic(k, tamper, start, threshold, large=None):
+    """k invented invoices. `large`: position of one invoice made far larger than the others
+    (500,000.00 before tax), for tests of amount-weighted spot checks."""
     rng = random.Random(secrets.randbits(64))
     taxpayer, authority = new_key(), new_key()
     base = core_fields(rng)
@@ -80,7 +82,7 @@ def synthetic(k, tamper, start, threshold):
         c = dict(base)
         c["uuid"] = str(uuid.UUID(int=rng.getrandbits(128), version=4))
         c["ordinal"] = start + n
-        c["net"] = rng.randrange(1000, 300000)
+        c["net"] = 50_000_000 if n == large else rng.randrange(1000, 300000)
         c["vat"] = c["net"] * 21 // 100
         c["total"] = c["net"] + c["vat"]
         if tamper == "gap" and n == k - 1 and k > 1:

@@ -21,13 +21,16 @@ use crate::batch::{BatchCore, check_invoices};
 use poseidon::poseidon2::Poseidon2;
 
 // Domain separators: ASCII "PF-RUN0001", "PF-PAIR001", "PF-GAMMA01", "PF-SORTED1", "PF-SCOPE01",
-// "PF-CODES01".
+// "PF-CODES01", "PF-SUMLEAF", "PF-SUMPAIR", "PF-SUMROOT".
 pub global DOMAIN_RUN: Field = 0x50462d52554e30303031;
 pub global DOMAIN_PAIR: Field = 0x50462d50414952303031;
 pub global DOMAIN_GAMMA: Field = 0x50462d47414d4d413031;
 pub global DOMAIN_SORTED: Field = 0x50462d534f5254454431;
 pub global DOMAIN_SCOPE: Field = 0x50462d53434f50453031;
 pub global DOMAIN_CODES: Field = 0x50462d434f4445533031;
+pub global DOMAIN_SUM_LEAF: Field = 0x50462d53554d4c454146;
+pub global DOMAIN_SUM_PAIR: Field = 0x50462d53554d50414952;
+pub global DOMAIN_SUM_ROOT: Field = 0x50462d53554d524f4f54;
 
 /// Summary of a run of consecutive invoices (one leaf, or several leaves joined). Kept private
 /// inside `run_commitment`.
@@ -42,7 +45,7 @@ pub struct Run {
     pub fic_prod: Field, // prod (gamma - fic) over the run
     pub fic_chain: Field, // commitment to the run's receipt codes, in order
     pub null_chain: Field, // commitment to the run's nullifiers, in order
-    pub open_chain: Field, // commitment to the run's opening commitments, in order
+    pub open_chain: Field, // the run's opening commitments and positive totals (see spot.nr)
     pub scope: Field, // scope nullifier of the presentation this run belongs to
 }
 
@@ -93,6 +96,26 @@ pub fn codes_commitment<let K: u32>(count: Field, fics: [Field; K]) -> Field {
     Poseidon2::hash([DOMAIN_CODES, count, Poseidon2::hash(fics, K)], 3)
 }
 
+// The opening commitments are kept in a tree that also carries amounts, so that a spot check can
+// ask for "the invoice that covers this point of the total" (spot.nr). A leaf commits to its
+// opening commitments and to its positive totals; a node commits to both children and to the sum
+// of positive totals under each; the root adds the grand sum.
+
+/// Commitment to one leaf's opening commitments and positive totals (both zero in unused slots).
+pub fn openings_leaf<let K: u32>(openings: [Field; K], plus: [Field; K]) -> Field {
+    Poseidon2::hash([DOMAIN_SUM_LEAF, Poseidon2::hash(openings, K), Poseidon2::hash(plus, K)], 3)
+}
+
+/// Commitment to two adjacent subtrees and the sum of positive totals under each.
+pub fn openings_join(left: Field, left_sum: Field, right: Field, right_sum: Field) -> Field {
+    Poseidon2::hash([DOMAIN_SUM_PAIR, left, left_sum, right, right_sum], 5)
+}
+
+/// What an aggregated proof publishes: the whole tree and the sum of all positive totals.
+pub fn openings_root(chain: Field, sum_plus: Field) -> Field {
+    Poseidon2::hash([DOMAIN_SUM_ROOT, chain, sum_plus], 3)
+}
+
 /// The run made of the checked invoices of one leaf.
 pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field, context: Field, year: u32) -> Run {
     let mut fic_prod: Field = 1;
@@ -112,7 +135,7 @@ pub fn leaf_run<let K: u32>(c: BatchCore<K>, gamma: Field, context: Field, year:
         fic_prod,
         fic_chain: codes_commitment(c.count as Field, c.fics),
         null_chain: Poseidon2::hash(c.nullifiers, K),
-        open_chain: Poseidon2::hash(c.openings, K),
+        open_chain: openings_leaf(c.openings, c.plus),
         scope: scope_nullifier(context, c.taxpayer_key_tag, c.unit, c.device, year as Field),
     }
 }
@@ -134,7 +157,7 @@ pub fn join_runs(left: Run, right: Run) -> Run {
         fic_prod: left.fic_prod * right.fic_prod,
         fic_chain: pair_hash(left.fic_chain, right.fic_chain),
         null_chain: pair_hash(left.null_chain, right.null_chain),
-        open_chain: pair_hash(left.open_chain, right.open_chain),
+        open_chain: openings_join(left.open_chain, left.sum_plus, right.open_chain, right.sum_plus),
         scope: left.scope,
     }
 }
@@ -283,6 +306,7 @@ fn test_partly_filled_leaf_counts_only_its_invoices() {
         fics: [3, 5, 0],
         nullifiers: [11, 12, 0],
         openings: [21, 22, 0],
+        plus: [100, 200, 0],
     };
     let r = leaf_run(c, gamma, 99, 2026);
     assert(r.count == 2);

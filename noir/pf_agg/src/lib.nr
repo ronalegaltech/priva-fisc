@@ -13,7 +13,9 @@
 // is generated. A test that only executes a node or the top shows nothing about what is inside.
 
 use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
-use pf_efi::agg::{Run, gamma_from, join_runs, run_commitment, run_from_fields, sorted_commitment};
+use pf_efi::agg::{
+    Run, gamma_from, join_runs, openings_root, run_commitment, run_from_fields, sorted_commitment,
+};
 
 /// Verifies one proof about a run (a leaf proof or a node proof) and returns the run.
 fn verify_run_proof(
@@ -74,7 +76,7 @@ pub fn prove_node(
 
 /// TOP: the proof of the whole run and the proof about the sorted receipt codes together give the
 /// statement. Returns (taxpayer key hash, authority key hash, starts at ordinal 1, number of
-/// invoices, nullifier-chain root, opening-chain root, scope nullifier).
+/// invoices, nullifier-chain root, root of the opening tree, scope nullifier).
 pub fn prove_top(
     run_vk: UltraHonkVerificationKey,
     run_proof: UltraHonkZKProof,
@@ -125,7 +127,7 @@ pub fn prove_top(
         run.first_ordinal == 1,
         run.count as u32,
         run.null_chain,
-        run.open_chain,
+        openings_root(run.open_chain, run.sum_plus),
         run.scope,
     )
 }

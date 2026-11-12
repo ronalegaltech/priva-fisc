@@ -61,8 +61,9 @@ NOT_PROVED = (
     "that the tax authority saw the CONTENT of these invoices: its signature covers the request "
     "UUID and the receipt code only. Ordinals, amounts, year, business unit and device are what "
     "the taxpayer signed - ask for a spot check, see tools/efi/opening.py",
-    "that the total is spread over many invoices: one altered invoice can carry a large part "
-    "of it, and a spot check of a few invoices may miss it",
+    "that the amounts are true: one inflated invoice can carry a large part of the total. "
+    "With an aggregated proof, ask by amount (opening.py --point), which asks for large "
+    "invoices most of the time; a credit note made smaller is not caught that way",
     "that no invoices exist after the last one, or on other devices of the same taxpayer",
 )
 

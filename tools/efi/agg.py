@@ -35,6 +35,9 @@ P = 2188824287183927522224640574525727508854836440041603434369820418657580849561
 DOMAIN_PAIR = int.from_bytes(b"PF-PAIR001", "big")
 DOMAIN_GAMMA = int.from_bytes(b"PF-GAMMA01", "big")
 DOMAIN_CODES = int.from_bytes(b"PF-CODES01", "big")
+DOMAIN_SUM_LEAF = int.from_bytes(b"PF-SUMLEAF", "big")
+DOMAIN_SUM_PAIR = int.from_bytes(b"PF-SUMPAIR", "big")
+DOMAIN_SUM_ROOT = int.from_bytes(b"PF-SUMROOT", "big")
 SORTED = "agg_sorted_s4096"
 SORTED_CAPACITY = 4096
 LEAF_SIZES = (1, 10)
@@ -131,6 +134,33 @@ def slot_hash(values):
     return poseidon2.hash(values)
 
 
+# The tree of opening commitments, which also carries the sum of positive totals under every node
+# (noir/pf_efi/src/agg.nr and spot.nr).
+def openings_leaf(openings, plus):
+    return poseidon2.hash([DOMAIN_SUM_LEAF, poseidon2.hash(openings), poseidon2.hash(plus)])
+
+
+def openings_join(left, left_sum, right, right_sum):
+    return poseidon2.hash([DOMAIN_SUM_PAIR, left, left_sum, right, right_sum])
+
+
+def openings_root(chain, total):
+    return poseidon2.hash([DOMAIN_SUM_ROOT, chain, total])
+
+
+def verify_proof(name, proof, public_inputs, target="evm"):
+    """True if `proof` (bytes) is a valid proof of circuit `name` for these public inputs (bytes),
+    under a verification key derived locally."""
+    with tempfile.TemporaryDirectory() as tmp:
+        run(["bb", "write_vk", "-b", compiled(name), "-o", tmp, "-t", target], what=f"key of {name}")
+        for label, data in (("proof", proof), ("public_inputs", public_inputs)):
+            with open(os.path.join(tmp, label), "wb") as f:
+                f.write(data)
+        r = subprocess.run(["bb", "verify", "-k", os.path.join(tmp, "vk"), "-p", os.path.join(tmp, "proof"),
+                            "-i", os.path.join(tmp, "public_inputs"), "-t", target], capture_output=True, text=True)
+    return "Proof verified successfully" in (r.stdout + r.stderr)
+
+
 def fic_int(invoice):
     return int(invoice["resp"][3].decode().replace("-", ""), 16)
 
@@ -177,7 +207,7 @@ def join_run_values(left, right):
     return [
         left[0] + right[0], left[1], right[2], left[3], left[4], left[5] + right[5], left[6] + right[6],
         left[7] * right[7] % P, pair_hash(left[8], right[8]), pair_hash(left[9], right[9]),
-        pair_hash(left[10], right[10]), left[11],
+        openings_join(left[10], left[5], right[10], right[5]), left[11],
     ]
 
 
@@ -230,7 +260,7 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
             d = new_dir()
             prove(leaf, common + f'blind = "{hex(blind)}"\n' + leaf_public + hashes, d, "noir-recursive")
             items.append({"dir": d, "is_leaf": True, "run": values[:12], "blind": blind,
-                          "openings": values[12:], "tree": {"h": hex(values[10]), "leaf": index}})
+                          "openings": values[12:], "tree": {"h": hex(values[10]), "sum": values[5], "leaf": index}})
         keys = fields_of(os.path.join(items[0]["dir"], "public_inputs"))
         tkh, ikh = keys[5], keys[6]
         key_lines = f'taxpayer_key_hash = "{hex(tkh)}"\nissuer_key_hash = "{hex(ikh)}"\n'
@@ -249,7 +279,7 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
             prove("agg_node", text + key_lines + public + hashes, d, "noir-recursive")
             joined = join_run_values(left["run"], right["run"])
             return {"dir": d, "is_leaf": False, "run": joined, "blind": blind_out,
-                    "tree": {"h": hex(joined[10]), "left": left["tree"], "right": right["tree"]}}
+                    "tree": {"h": hex(joined[10]), "sum": joined[5], "left": left["tree"], "right": right["tree"]}}
 
         leaf_items = list(items)
         whole = tree_reduce(items, join)
@@ -281,12 +311,15 @@ def make_proof(k, invoices, tmod, imod, threshold, context, year, out_dir, hooks
         json.dump(st, f, indent=1)
     if keep:
         import opening  # here, not at the top: opening.py uses this module too
-        record = {
-            "invoices": [opening.opening_of(i["doc"], i["resp"][3], hex(i["salt"])) for i in invoices],
-            "leaves": [{"count": count, "openings": [hex(v) for v in item["openings"]]}
-                       for (_, count), item in zip(leaves, leaf_items)],
-            "tree": whole["tree"],
-        }
+        opened = [opening.opening_of(i["doc"], i["resp"][3], hex(i["salt"])) for i in invoices]
+        record = {"invoices": opened, "leaves": [], "tree": whole["tree"]}
+        at = 0
+        for (_, count), item in zip(leaves, leaf_items):
+            plus = [opening.positive_cents(o) for o in opened[at:at + count]] + [0] * (k - count)
+            at += count
+            if openings_leaf(item["openings"], plus) != int(item["tree"]["h"], 16):
+                raise StepFailed("the spot-check record does not match what the leaf circuit computed")
+            record["leaves"].append({"count": count, "openings": [hex(v) for v in item["openings"]], "plus": plus})
         write_private(keep, record)
     return st
 

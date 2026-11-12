@@ -5,7 +5,7 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | Package | Kind | What it does |
 |---|---|---|
 | `pf_xmldsig` | library | Enveloped XML-DSig with exclusive C14N, SHA-256 and RSA-2048 PKCS#1 v1.5: rebuilds the canonical `SignedInfo` from a fixed template around the document digest, checks the signature, hashes the signer key. The first 512 bytes of `SignedInfo` never change, so their SHA-256 state is a constant and only the last three blocks are hashed in the circuit. Parsers for UUIDs, timestamps, amounts and registration codes that constrain every character. |
-| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check. |
+| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
 | `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices (the 10-slot leaf may hold fewer), publishes a blinded commitment to the run. |
@@ -13,6 +13,7 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | `agg_sorted_s4096` | circuit | Up to 4,096 receipt codes sorted strictly increasing. |
 | `agg_top` | circuit | Final proof of an aggregate. |
 | `agg_leaf_k*_open`, `agg_sorted_s4096_open` | helper | Executed by the prover to get the private inputs of the next proof up. Never proved, never shared. |
+| `spot_open_k1`, `spot_open_k10` | circuit | Spot check against an aggregated proof: an opened invoice sits under the published root; whether it is the first, the last, and whether it covers the point of the total the verifier drew. About 8,000 gates. |
 | `open_invoice`, `poseidon2_check` | helper | Circuit forms of the opening commitment and of the hash. Executed only by `tools/efi/test_poseidon2.py`, which checks the Python implementation the tools use against them. |
 | `rsa_key_hash` | helper | Key hash of an RSA modulus, as the circuits publish it. |
 | `leaf_request_v0`, `leaf_response_v0` | circuit | A request or a receipt on its own. Used for component tests and benchmarks. |
@@ -74,16 +75,22 @@ verifier has to compare them with the circuits it trusts. `tools/pf.py verify` a
 registry do.
 
 An aggregate publishes one root over the opening commitments of all its invoices instead of the
-commitments themselves. In a spot check the prover reveals an invoice together with the other
-commitments of its leaf and the sibling hashes up to that root (`tools/efi/opening.py`). The tools
-compute Poseidon2 in Python (`tools/efi/poseidon2.py`), so checking an opening needs no Noir
-toolchain.
+commitments themselves. The tree under that root also carries, at every node, the sum of the
+positive totals below it. In a spot check the prover reveals an invoice and proves, with the small
+`spot_open` circuit, that its commitment sits under the root, without showing the path: sibling
+hashes and sums and the other commitments of the leaf stay private. The same proof tells the
+verifier whether the invoice is the first or the last of the run, and whether it covers a point
+of the total that the verifier drew. Drawing points opens invoices with probability proportional
+to their amount, the way auditors sample by monetary unit: an inflated invoice that carries a
+large part of a threshold is asked for most of the time (`tools/efi/opening.py`, `spot.nr`).
+
+Outside a circuit the tools compute Poseidon2 in Python (`tools/efi/poseidon2.py`).
 
 ## Tests
 
 ```sh
 (cd pf_xmldsig && nargo test)                  # 27
-(cd pf_efi && nargo test)                      # 31
+(cd pf_efi && nargo test)                      # 38
 python3 ../tools/efi/test_leaf_response.py     # 7 cases
 python3 ../tools/efi/test_leaf_request.py      # 14 cases
 python3 ../tools/efi/test_replay.py            # 6 checks on an invoice signed again
@@ -91,8 +98,8 @@ python3 ../tools/efi/test_batch.py --k 1       # 8 cases
 python3 ../tools/efi/test_batch.py --k 10      # 12 cases
 python3 ../tools/efi/test_opening.py           # 4 cases
 python3 ../tools/efi/test_poseidon2.py         # 13 checks of the Python hash against circuits
-python3 ../tools/efi/test_agg.py               # 13 cases through proving, 12 spot checks
-python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 22 spot checks
+python3 ../tools/efi/test_agg.py               # 14 cases through proving, 17 spot checks
+python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 30 spot checks
 ```
 
 The aggregation tests always run the prover. Proofs inside a node or the top proof are checked
