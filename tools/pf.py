@@ -3,7 +3,7 @@
 
   pf.py prove  --out DIR --threshold EUR --year Y [--context HEX]  REQ1.xml RESP1.xml [REQ2.xml RESP2.xml ...]
   pf.py prove  --out DIR --synthetic K            (invented invoices, for demos and tests)
-  pf.py verify DIR
+  pf.py verify DIR [--taxpayer-cert FILE]
 
 `prove` runs on the taxpayer's machine. It reads signed request/response files (in ordinal order),
 proves the batch statement, and leaves in DIR only what may be handed over: the proof, its public
@@ -12,6 +12,12 @@ values and a readable statement. Witness files are deleted.
 `verify` runs on the verifier's machine. It does NOT trust a verification key supplied with the
 proof: it derives the key from the circuit in this repository, checks the proof against it, and
 looks the authority key up in registry/issuer_keys.json.
+
+A proof names the taxpayer only by the hash of the signing key. Who that is comes from the
+taxpayer's fiscalization certificate: with --taxpayer-cert (a certificate file, or any signed EFI
+request, which embeds it) `verify` checks that the key in the certificate is the key of the proof
+and prints the certificate's subject. Checking the certificate itself (issuer, validity,
+revocation) is done with ordinary X.509 tools and is not part of this command.
 
 Batch sizes available: 1 and 10 (noir/batch_k1, noir/batch_k10). Run `. tools/toolchain.env` first.
 """
@@ -29,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
 sys.path.insert(0, os.path.join(HERE, "efi"))
 import batch_inputs  # noqa: E402
+import keyhash  # noqa: E402
 
 SIZES = (1, 10)
 NOT_PROVED = (
@@ -156,9 +163,20 @@ def verify(a):
         print("  authority key          : NOT IN registry/issuer_keys.json - do not rely on this proof")
     print(f"  context                : {st['context']}")
     print(f"  nullifiers / openings  : {k} each (see statement.json)")
+    cert_ok = True
+    if a.taxpayer_cert:
+        cert = keyhash.describe(keyhash.load_cert(a.taxpayer_cert, a.taxpayer_cert.lower().endswith(".xml")))
+        cert_ok = int(cert["key_hash"], 16) == int(st["taxpayer_key_hash"], 16)
+        if cert_ok:
+            print(f"  taxpayer               : key matches the certificate of {cert['subject']}")
+            print(f"                           (issued by {cert['issuer']}, valid {cert['not_before'][:10]} to {cert['not_after'][:10]})")
+        else:
+            print("  taxpayer               : the key in this certificate is NOT the key of the proof")
     print("  NOT proved:")
     for line in NOT_PROVED:
         print(f"    - {line}")
+    if not cert_ok:
+        return 3
     return 0 if issuer else 2
 
 
@@ -174,6 +192,7 @@ def main():
     p.add_argument("files", nargs="*")
     v = sub.add_parser("verify")
     v.add_argument("dir")
+    v.add_argument("--taxpayer-cert", help="taxpayer certificate (DER/PEM), or a signed EFI request (.xml)")
     a = ap.parse_args()
     return prove(a) if a.cmd == "prove" else verify(a)
 

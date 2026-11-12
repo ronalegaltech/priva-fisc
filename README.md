@@ -79,19 +79,29 @@ circuit in this repository and looks the authority key up in `registry/issuer_ke
 aggregate it also derives the key hashes of the leaf, node and sorted-list circuits and compares
 them with the ones the proof names.
 
+A proof names the taxpayer only by the hash of the signing key. Who that is comes from the
+taxpayer's fiscalization certificate:
+
+```sh
+python3 tools/pf.py verify DIR --taxpayer-cert certificate.der    # or any signed request .xml
+```
+
+checks that the key in the certificate is the key of the proof and prints the certificate's
+subject. The certificate itself (issuer, validity, revocation) is checked with ordinary X.509 tools.
+
 ## Measurements
 
 Apple M3, 16 GB.
 
 | | Gates | Proving | Memory | Proof |
 |---|---|---|---|---|
-| 1 invoice | 421,095 | 5 s | 0.9 GB | 9.9 KB |
-| 10 invoices | 4,125,340 | 23 s | 6.6 GB | 11.1 KB |
-| 20 invoices (2 leaves of 10) | 4,126,495 per leaf; node and top about 1.47M each | 111 s in total | 6.6 GB per leaf | 10.7 KB |
-| 30 invoices (3 leaves of 10) | same circuits | 158 s in total | 6.6 GB per leaf | 10.7 KB |
+| 1 invoice | 333,177 | 2.4 s | 0.8 GB | 9.9 KB |
+| 10 invoices | 3,243,073 | 19 s | 5.0 GB | 11.1 KB |
+| 20 invoices (2 leaves of 10) | 3,244,228 per leaf; node and top about 1.47M each | 94 s in total | 5.0 GB per leaf | 10.7 KB |
+| 30 invoices (3 leaves of 10) | same circuits | 135 s in total | 5.0 GB per leaf | 10.7 KB |
 
-On a local Starknet network both kinds of proof are accepted in one transaction each: about 863M L2
-gas for the batch of 10 and 822M for an aggregate of 30, under the documented limit of 1.11 * 10^9
+On a local Starknet network both kinds of proof are accepted in one transaction each: about 862M L2
+gas for the batch of 10 and 820M for an aggregate of 30, under the documented limit of 1.11 * 10^9
 per transaction. The on-chain cost of an aggregate does not grow with the number of invoices. Nothing
 has been deployed to a public network.
 
@@ -100,7 +110,9 @@ has been deployed to a public network.
 - The circuits read requests of up to 2,048 canonical bytes whose `<Invoice>` start tag fits in
   1,280 bytes, with timestamps that carry a numeric offset. Anything else cannot be proved (it does
   not produce a wrong proof).
-- Seller tax number, invoice type and corrective references are not read yet.
+- Invoice type and corrective references are not read yet. The seller's tax number is not read
+  from the invoice on purpose: it is a field the taxpayer writes, while the signing certificate
+  carries the same identity vouched for by the certificate authority.
 - An aggregate holds a multiple of 10 invoices, up to 256 (the capacity of the sorted-list circuit).
 - The only real authority key in the registry is the 2020 test-environment signer.
 

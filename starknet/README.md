@@ -19,7 +19,7 @@ A verifier embeds its circuit's verification key. After any change under `noir/`
 `refresh_fixture.sh`, otherwise the contracts reject proofs of the new circuits.
 
 On a local network (starknet-devnet) the flow runs end to end for both kinds of proof: declare,
-deploy, list the authority key, submit (accepted: about 863M L2 gas for the batch of 10, 822M for
+deploy, list the authority key, submit (accepted: about 862M L2 gas for the batch of 10, 820M for
 an aggregate of 30), submit the same proof again (refused with `invoice already presented`). The
 cost of an aggregate does not depend on how many invoices it covers. Starknet documents a limit of
 1.11 * 10^9 L2 gas per transaction. Nothing is deployed to a public network.

@@ -21,6 +21,15 @@ global SI_TAIL: [u8; 39] = "</DigestValue></Reference></SignedInfo>".as_bytes();
 global URI_RESPONSE: [u8; 8] = "Response".as_bytes();
 global URI_REQUEST: [u8; 7] = "Request".as_bytes();
 
+// The first 512 bytes of the canonical SignedInfo are the same for every message of a kind, so
+// their SHA-256 state is a constant. Only what follows is hashed in the circuit: the rest of the
+// fixed text up to the digest, the base64 digest and SI_TAIL (three blocks instead of eleven).
+// The unit tests check both against a plain SHA-256 of the full text.
+global SI_STATE_RESPONSE: [u32; 8] = [0x944fdbd6, 0xf9cd7bf1, 0x7f93babe, 0x5746b793, 0xe176949a, 0x7d88b3f2, 0x6fc05f33, 0xb321c4b3];
+global SI_REST_RESPONSE: [u8; 51] = "2001/04/xmlenc#sha256\"></DigestMethod><DigestValue>".as_bytes();
+global SI_STATE_REQUEST: [u32; 8] = [0x66163296, 0x41574ecf, 0x618f9e5d, 0x20a1f078, 0x61463b66, 0xdfaae167, 0x9897e6c3, 0xf0b2f805];
+global SI_REST_REQUEST: [u8; 50] = "001/04/xmlenc#sha256\"></DigestMethod><DigestValue>".as_bytes();
+
 global B64_ALPHABET: [u8; 64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     .as_bytes();
 
@@ -42,48 +51,61 @@ pub fn base64_encode_32(d: [u8; 32]) -> [u8; 44] {
     out
 }
 
-/// SHA-256 of the canonical SignedInfo whose single Reference is URI="#Response".
-pub fn signed_info_digest_response(doc_digest: [u8; 32]) -> [u8; 32] {
+/// Finishes the SHA-256 of a canonical SignedInfo from the state after its first 512 bytes:
+/// `rest` (fixed text up to the digest), the base64 digest, SI_TAIL, then SHA-256 padding.
+fn finish_signed_info<let R: u32>(state_512: [u32; 8], rest: [u8; R], doc_digest: [u8; 32]) -> [u8; 32] {
     let b64 = base64_encode_32(doc_digest);
-    let mut si: [u8; 646] = [0; 646];
-    for i in 0..270 {
-        si[i] = SI_HEAD[i];
-    }
-    for i in 0..8 {
-        si[270 + i] = URI_RESPONSE[i];
-    }
-    for i in 0..285 {
-        si[278 + i] = SI_MID[i];
+    let n = R + 44 + 39; // bytes after the first 512
+    assert(n + 9 <= 192); // message, 0x80 and the 8-byte length fit in three blocks
+    let mut buf: [u8; 192] = [0; 192];
+    for i in 0..R {
+        buf[i] = rest[i];
     }
     for i in 0..44 {
-        si[563 + i] = b64[i];
+        buf[R + i] = b64[i];
     }
     for i in 0..39 {
-        si[607 + i] = SI_TAIL[i];
+        buf[R + 44 + i] = SI_TAIL[i];
     }
-    sha256::digest(si)
+    buf[n] = 0x80;
+    // total length in bits, big-endian, in the last eight bytes
+    let mut bit_length: u64 = ((512 + n) as u64) * 8;
+    for i in 0..8 {
+        buf[191 - i] = (bit_length % 256) as u8;
+        bit_length = bit_length / 256;
+    }
+
+    let mut state = state_512;
+    for b in 0..3 {
+        let mut w: [u32; 16] = [0; 16];
+        for j in 0..16 {
+            let o = 64 * b + 4 * j;
+            w[j] = ((buf[o] as u32) << 24)
+                | ((buf[o + 1] as u32) << 16)
+                | ((buf[o + 2] as u32) << 8)
+                | (buf[o + 3] as u32);
+        }
+        state = std::hash::sha256_compression(w, state);
+    }
+
+    let mut out: [u8; 32] = [0; 32];
+    for j in 0..8 {
+        out[4 * j] = (state[j] >> 24) as u8;
+        out[4 * j + 1] = ((state[j] >> 16) & 0xff) as u8;
+        out[4 * j + 2] = ((state[j] >> 8) & 0xff) as u8;
+        out[4 * j + 3] = (state[j] & 0xff) as u8;
+    }
+    out
+}
+
+/// SHA-256 of the canonical SignedInfo whose single Reference is URI="#Response".
+pub fn signed_info_digest_response(doc_digest: [u8; 32]) -> [u8; 32] {
+    finish_signed_info(SI_STATE_RESPONSE, SI_REST_RESPONSE, doc_digest)
 }
 
 /// SHA-256 of the canonical SignedInfo whose single Reference is URI="#Request".
 pub fn signed_info_digest_request(doc_digest: [u8; 32]) -> [u8; 32] {
-    let b64 = base64_encode_32(doc_digest);
-    let mut si: [u8; 645] = [0; 645];
-    for i in 0..270 {
-        si[i] = SI_HEAD[i];
-    }
-    for i in 0..7 {
-        si[270 + i] = URI_REQUEST[i];
-    }
-    for i in 0..285 {
-        si[277 + i] = SI_MID[i];
-    }
-    for i in 0..44 {
-        si[562 + i] = b64[i];
-    }
-    for i in 0..39 {
-        si[606 + i] = SI_TAIL[i];
-    }
-    sha256::digest(si)
+    finish_signed_info(SI_STATE_REQUEST, SI_REST_REQUEST, doc_digest)
 }
 
 /// Hash that pins an RSA-2048 public key (e = 65537) to one field element. Limbs are 120-bit,
@@ -116,19 +138,26 @@ pub fn assert_rsa_sha256(
 }
 
 // --- Character-class-checked field parsers ---
+fn hex_values() -> [u8; 256] {
+    let mut t: [u8; 256] = [255; 256];
+    for i in 0..10 {
+        t[48 + i] = i as u8; // '0'..'9'
+    }
+    for i in 0..6 {
+        t[65 + i] = 10 + i as u8; // 'A'..'F'
+        t[97 + i] = 10 + i as u8; // 'a'..'f'
+    }
+    t
+}
+
+// Value of each byte as a hexadecimal digit, 255 for bytes that are not one.
+global HEX_VALUE: [u8; 256] = hex_values();
+
 /// One hexadecimal character -> its value. Rejects everything else.
 pub fn hex_nibble(c: u8) -> u8 {
-    let is_digit = (c >= 48) & (c <= 57);
-    let is_lower = (c >= 97) & (c <= 102);
-    let is_upper = (c >= 65) & (c <= 70);
-    assert(is_digit | is_lower | is_upper, "hex: character is not hexadecimal");
-    if is_digit {
-        c - 48
-    } else if is_lower {
-        c - 87
-    } else {
-        c - 55
-    }
+    let v = HEX_VALUE[c as u32];
+    assert(v != 255, "hex: character is not hexadecimal");
+    v
 }
 
 /// 32 hexadecimal characters -> 128-bit value.
@@ -262,6 +291,59 @@ fn pad<let N: u32, let M: u32>(s: [u8; N]) -> [u8; M] {
         }
     }
     out
+}
+
+/// Test reference: the full canonical SignedInfo text for a digest, built the plain way.
+fn full_signed_info<let U: u32, let N: u32>(uri: [u8; U], doc_digest: [u8; 32]) -> [u8; N] {
+    let b64 = base64_encode_32(doc_digest);
+    let mut si: [u8; N] = [0; N];
+    for i in 0..270 {
+        si[i] = SI_HEAD[i];
+    }
+    for i in 0..U {
+        si[270 + i] = uri[i];
+    }
+    for i in 0..285 {
+        si[270 + U + i] = SI_MID[i];
+    }
+    for i in 0..44 {
+        si[555 + U + i] = b64[i];
+    }
+    for i in 0..39 {
+        si[599 + U + i] = SI_TAIL[i];
+    }
+    si
+}
+
+#[test]
+fn test_signed_info_digest_matches_plain_sha256() {
+    let digests: [[u8; 32]; 3] = [[0; 32], [255; 32], sha256::digest("any document".as_bytes())];
+    for k in 0..3 {
+        let response: [u8; 646] = full_signed_info(URI_RESPONSE, digests[k]);
+        assert(signed_info_digest_response(digests[k]) == sha256::digest(response));
+        let request: [u8; 645] = full_signed_info(URI_REQUEST, digests[k]);
+        assert(signed_info_digest_request(digests[k]) == sha256::digest(request));
+    }
+}
+
+#[test]
+fn test_hex_nibble_values() {
+    assert(hex_nibble(48) == 0);
+    assert(hex_nibble(57) == 9);
+    assert(hex_nibble(97) == 10);
+    assert(hex_nibble(102) == 15);
+    assert(hex_nibble(65) == 10);
+    assert(hex_nibble(70) == 15);
+}
+
+#[test(should_fail_with = "hex: character is not hexadecimal")]
+fn test_hex_nibble_rejects_g() {
+    let _ = hex_nibble(103);
+}
+
+#[test(should_fail_with = "hex: character is not hexadecimal")]
+fn test_hex_nibble_rejects_slash() {
+    let _ = hex_nibble(47);
 }
 
 #[test]

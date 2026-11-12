@@ -4,7 +4,7 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 
 | Package | Kind | What it does |
 |---|---|---|
-| `pf_xmldsig` | library | Enveloped XML-DSig with exclusive C14N, SHA-256 and RSA-2048 PKCS#1 v1.5: rebuilds the canonical `SignedInfo` from a fixed template around the document digest, checks the signature, hashes the signer key. Parsers for UUIDs, timestamps, amounts and registration codes that constrain every character. |
+| `pf_xmldsig` | library | Enveloped XML-DSig with exclusive C14N, SHA-256 and RSA-2048 PKCS#1 v1.5: rebuilds the canonical `SignedInfo` from a fixed template around the document digest, checks the signature, hashes the signer key. The first 512 bytes of `SignedInfo` never change, so their SHA-256 state is a constant and only the last three blocks are hashed in the circuit. Parsers for UUIDs, timestamps, amounts and registration codes that constrain every character. |
 | `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
@@ -56,7 +56,7 @@ registry do.
 ## Tests
 
 ```sh
-(cd pf_xmldsig && nargo test)                  # 13
+(cd pf_xmldsig && nargo test)                  # 17
 (cd pf_efi && nargo test)                      # 14
 python3 ../tools/efi/test_leaf_response.py     # 7 cases
 python3 ../tools/efi/test_leaf_request.py      # 9 cases
@@ -71,5 +71,6 @@ The aggregation tests always run the prover. Proofs inside a node or the top pro
 when that proof is made, not when its witness is generated, so a test that only executes the outer
 circuit shows nothing about what is inside.
 
-Compiling the 10-invoice circuits takes about four minutes each. They sit 1.6% under 2^22 gates;
-past that, proving time and memory double.
+Compiling the 10-invoice circuits takes about four minutes each. They sit about 23% under 2^22
+gates; past that, proving time and memory double. Most of an invoice's cost is hashing the request
+(about 150,000 gates for 2,048 bytes) and the two RSA checks.

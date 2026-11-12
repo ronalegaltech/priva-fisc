@@ -4,8 +4,9 @@
   keyhash.py CERT.der|CERT.pem           print the key hash and the certificate's public facts
   keyhash.py --from-xml SIGNED.xml       same, for the certificate embedded in a signed EFI message
 
-A verifier uses this to check that the `issuer key hash` of a proof is the tax authority's key:
-take the authority's public certificate, compute the hash here, compare.
+A verifier uses this to tie the key hashes of a proof to certificates: the authority's public
+certificate for the `issuer key hash`, the taxpayer's fiscalization certificate for the `taxpayer
+key hash`. Take the certificate, compute the hash here, compare.
 """
 import argparse
 import base64

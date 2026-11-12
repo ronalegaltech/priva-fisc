@@ -59,7 +59,7 @@ Saldırgan kanıtı üreten mükelleftir. Doğrulayıcı (banka, faktoring şirk
 | commit | Nullifier ve açma taahhütleri | Noir (Poseidon2) | Mükellefin makinesi | Çalışıyor |
 | kanıt üretimi | Kanıtı çıkar | `tools/pf.py prove` -> Barretenberg 6.0.0, `-t evm` (gizlilik kipi); tanık dosyaları silinir | Mükellefin makinesi | Çalışıyor |
 | agg-orchestrator | Büyük kümeleri parçalayıp birleştir | Noir özyineleme: yaprak `agg_leaf_*`, birleştirici `agg_node`, sıralı liste `agg_sorted_s256`, üst kanıt `agg_top` (`pf_agg`); `tools/efi/agg.py` | Mükellefin makinesi | Çalışıyor: istenen sayıda 10'luk yaprak, en çok 256 fatura |
-| verifier-offline | Kanıtı zincirsiz doğrula | `tools/pf.py verify`: doğrulama anahtarını depodaki devreden kendisi türetir, kanıtı denetler, idare anahtarını `registry/issuer_keys.json` içinde arar | Doğrulayıcının makinesi | Çalışıyor |
+| verifier-offline | Kanıtı zincirsiz doğrula | `tools/pf.py verify`: doğrulama anahtarını depodaki devreden kendisi türetir, kanıtı denetler, idare anahtarını `registry/issuer_keys.json` içinde arar; `--taxpayer-cert` ile kanıttaki mükellef anahtarının verilen sertifikanın anahtarı olduğunu denetler | Doğrulayıcının makinesi | Çalışıyor |
 | verifier-onchain | Kanıtı Starknet'te doğrula | Garaga'nın ürettiği iki Cairo sözleşmesi: 10'luk kanıt için `pf_batch_k10_verifier`, birleştirilmiş kanıt için `pf_agg_top_verifier` | Starknet | Yerel Starknet ağında gerçek işlemle çalışıyor; Sepolia'ya yüklenmedi |
 | status-contract | Nullifier defteri, idare anahtar kaydı, kanıtlananın kaydı; iki kanıt türünü de kabul eder; birleştirilmiş kanıtta yaprak, birleştirici ve sıralı liste devrelerinin özetlerini kendi kaydıyla karşılaştırır, fatura sayısını kanıttan okur | Cairo (`starknet/pf_registry`) | Starknet | Testler 13/13; yerel Starknet ağında uçtan uca çalışıyor (`tools/starknet/devnet_demo.sh`); Sepolia'ya yüklenmedi |
 | anahtar kaydı | İdare sertifikasından anahtar özeti | `tools/efi/keyhash.py` + Noir `rsa_key_hash`; `registry/issuer_keys.json` | Herkes hesaplayabilir | Çalışıyor; kayıtta yalnız 2021 test sertifikası var |
@@ -70,7 +70,7 @@ Sabit sürümler: Noir 1.0.0, Barretenberg 6.0.0, Scarb/Cairo 2.21.0, Starknet F
 ## 4. Devre tasarımı
 
 ### 4.1 İdare yanıtı (`pf_efi/response.nr`)
-Kanonik yanıt sabit düzenli 318 bayttır: dört alan (üç UUID, bir tarih-saat) ve aralarında sabit metin. Devre bu baytları dışarıdan almaz; dört alanı karakter karakter denetler, belgeyi şablondan kendisi kurar, SHA-256 özetini alır, bu özeti yine sabit şablonlu SignedInfo'ya yerleştirir, onun özetini RSA ile doğrular. Sonuç: kanıt varsa idare tam olarak bu dört alanı imzalamıştır. Dışarıdaki kanonikleştirme hatalıysa kanıt üretilemez, ama yanlış bir şey kanıtlanamaz.
+Kanonik yanıt sabit düzenli 318 bayttır: dört alan (üç UUID, bir tarih-saat) ve aralarında sabit metin. Devre bu baytları dışarıdan almaz; dört alanı karakter karakter denetler, belgeyi şablondan kendisi kurar, SHA-256 özetini alır, bu özeti yine sabit şablonlu SignedInfo'ya yerleştirir, onun özetini RSA ile doğrular. Sonuç: kanıt varsa idare tam olarak bu dört alanı imzalamıştır. Dışarıdaki kanonikleştirme hatalıysa kanıt üretilemez, ama yanlış bir şey kanıtlanamaz. SignedInfo'nun ilk 512 baytı her mesajda aynı olduğu için bu kısmın özet durumu devreye sabit olarak gömülüdür; devre yalnız son üç bloğu özetler (birim testi düz özetle karşılaştırır).
 
 ### 4.2 Mükellef isteği (`pf_efi/request.nr`)
 İstek değişken uzunluktadır (kalemler, alıcı bilgisi). Başlık sabit şablona uydurulur; böylece UUID ve `<Invoice` etiketinin başı sabit konumdadır. Etiketin içi tek geçişte taranır: devre her baytta "tırnak içinde miyim" ve "etiket hâlâ açık mı" durumunu izler ve bir özniteliği yalnız tırnak dışında başlayan ` Ad="` kalıbında tanır. Kanonik XML değerin içinde ham tırnak bırakmadığı için serbest metne yazılmış sahte bir `TotPrice="..."` öznitelik sayılamaz. Aranan yedi öznitelikten her biri tam bir kez geçmek zorundadır. Belgenin geri kalanı yalnız özetlenir. Etiket düzeyinde tek tırnak reddedilir: kanonik XML değerleri yalnız çift tırnakla sınırlar, bu kural devrenin okuyuşuyla bir XML ayrıştırıcının okuyuşunun ayrışabileceği belgeleri dışarıda bırakır.
@@ -93,14 +93,14 @@ Tek devreye sığmayan kümeler sıra numarasına göre 10'luk yapraklara bölü
 
 | Devre | Kapı | Kanıt süresi | Bellek | Kanıt boyu | Starknet doğrulama (yerel) |
 |---|---|---|---|---|---|
-| İdare yanıtı tek başına | 95.575 | 0,7 sn | 0,3 GB | 9,2 KB | geçti, ~178 M l2_gas |
-| Mükellef isteği tek başına (≤4096 bayt) | 470.491 | ~3 sn | 1,1 GB | 9,9 KB | ölçülmedi |
-| 1 fatura uçtan uca, gerçek 2021 test çifti | 421.095 | 5,0 sn | 0,9 GB | 9,9 KB | ölçülmedi |
-| 10 fatura tek kanıt (sentetik zincir) | 4.125.340 | 23 sn | 6,6 GB | 11,1 KB | geçti |
-| 20 fatura: iki yaprak, bir birleştirici, sıralı liste, üst kanıt | yaprak 4.126.495; birleştirici 1.469.809; üst 1.469.068; sıralı liste 18.782 | uçtan uca 111 sn | yaprak başına 6,6 GB | 10,7 KB | geçti |
-| 30 fatura: üç yaprak, iki birleştirici, sıralı liste, üst kanıt | aynı devreler | uçtan uca 158 sn | yaprak başına 6,6 GB | 10,7 KB | geçti |
+| İdare yanıtı tek başına | 60.985 | 0,5 sn | 0,2 GB | 9,2 KB | ölçülmedi |
+| Mükellef isteği tek başına (≤4096 bayt) | 421.416 | ~3 sn | 1,1 GB | 9,9 KB | ölçülmedi |
+| 1 fatura uçtan uca, gerçek 2021 test çifti | 333.177 | 2,4 sn | 0,8 GB | 9,9 KB | ölçülmedi |
+| 10 fatura tek kanıt (sentetik zincir) | 3.243.073 | 19 sn | 5,0 GB | 11,1 KB | geçti |
+| 20 fatura: iki yaprak, bir birleştirici, sıralı liste, üst kanıt | yaprak 3.244.228; birleştirici 1.469.809; üst 1.469.068; sıralı liste 18.782 | uçtan uca 94 sn | yaprak başına 5,0 GB | 10,7 KB | geçti |
+| 30 fatura: üç yaprak, iki birleştirici, sıralı liste, üst kanıt | aynı devreler | uçtan uca 135 sn | yaprak başına 5,0 GB | 10,7 KB | geçti |
 
-10 faturalık devreler 2^22 = 4.194.304 kapı sınırının %1,6 altındadır (pay dar; fatura başına yeni bir denetim eklenecekse önce mevcut denetimler ucuzlatılmalı); sınır aşılırsa süre ve bellek ikiye katlanır, bu yüzden istek boyu (2048 bayt) ve etiket penceresi (1280 bayt) bu devrede sabit tutulur. Devrenin derlenmesi yaklaşık 4 dakika, tanık üretimi 7 saniye sürer. Yerel Starknet ağında (starknet-devnet 0.10.1) iki kanıt türü de gerçek birer işlemle sunuldu ve kabul edildi: 10'luk kanıt 863 M, 30 faturalık birleştirilmiş kanıt 822 M L2 gaz (ağın varsayılan fiyatıyla 0,86 ve 0,82 STRK). Birleştirilmiş kanıtın zincir maliyeti fatura sayısıyla artmaz. Starknet belgelerindeki işlem başına sınır 1,11 milyar L2 gazdır; iki işlem de bunun altındadır. İkisinin de ikinci sunumu "invoice already presented" ile reddedildi. Açık ağda ölçüm yapılmadı.
+10 faturalık devreler 2^22 = 4.194.304 kapı sınırının yaklaşık %23 altındadır. Fatura başına maliyetin büyük kısmı isteğin özetlenmesi (2048 bayt için yaklaşık 150 bin kapı) ve iki RSA denetimidir; sınır aşılırsa süre ve bellek ikiye katlanır, bu yüzden istek boyu (2048 bayt) ve etiket penceresi (1280 bayt) bu devrede sabit tutulur. Devrenin derlenmesi yaklaşık 4 dakika, tanık üretimi 7 saniye sürer. Yerel Starknet ağında (starknet-devnet 0.10.1) iki kanıt türü de gerçek birer işlemle sunuldu ve kabul edildi: 10'luk kanıt 862 M, 30 faturalık birleştirilmiş kanıt 820 M L2 gaz (ağın varsayılan fiyatıyla 0,86 ve 0,82 STRK). Birleştirilmiş kanıtın zincir maliyeti fatura sayısıyla artmaz. Starknet belgelerindeki işlem başına sınır 1,11 milyar L2 gazdır; iki işlem de bunun altındadır. İkisinin de ikinci sunumu "invoice already presented" ile reddedildi. Açık ağda ölçüm yapılmadı.
 
 ## 5. Veri akışı
 
@@ -127,7 +127,8 @@ Tek devreye sığmayan kümeler sıra numarasına göre 10'luk yapraklara bölü
 
 - **Üretim sertifikası bilinmiyor.** Eldeki gerçek örnek 2021 test ortamından. Güncel idare sertifikası ve bir üretim çifti gerekiyor; test ortamına kendi erişimimiz için başvuru yapıldı.
 - **Okunamayan biçimler:** saat dilimi "Z" ile biten tarihler, başlığında SubseqDelivType olan istekler, 2048 bayttan uzun istekler (ayar), 1280 bayttan uzun `<Invoice` etiketi. Bunlarda kanıt üretilemez; yanlış kanıt çıkmaz.
-- **Henüz okunmayan alanlar:** satıcı vergi numarası, fatura tipi, düzeltme faturasının hangi faturayı düzelttiği.
+- **Henüz okunmayan alanlar:** fatura tipi, düzeltme faturasının hangi faturayı düzelttiği.
+- **Mükellefin kimliği devrede okunmaz, bilerek.** İstekteki satıcı vergi numarası mükellefin kendi yazdığı bir alandır. Kanıt mükellefi imza anahtarının özetiyle adlandırır; kimlik, sertifika kurumunun onayladığı fiskalizasyon sertifikasından gelir (`pf.py verify --taxpayer-cert`). Sertifikanın kendisinin denetimi (kök, geçerlilik, iptal) olağan X.509 araçlarıyla yapılır.
 - **Ölçek:** birleştirilmiş kanıt bugün 10'un katı olan ve 256'yı geçmeyen fatura sayılarında çalışır (256, sıralı liste devresinin kapasitesidir; daha büyüğü için aynı devrenin daha geniş bir sürümü ya da listenin de parçalanması gerekir). Süre fatura sayısıyla doğrusal artar: yaprak başına yaklaşık 40 sn, birleştirici başına yaklaşık 15 sn. 10'un katı olmayan sayılar için farklı boyda yaprak devresi gerekir, yazılmadı. Not: iç kanıt denetimi tanık üretiminde değil kanıt üretiminde yapılır; birleştirme testleri bu yüzden hep kanıt üretip doğrular.
 - **Portaldan kesilen faturalar:** idarenin kendi portalından kesilen faturalarda mükellefin elinde imzalı dosya oluşmaz; bu faturalar kapsam dışıdır.
 - **Denetim:** devreler ve kullanılan kütüphaneler bağımsız incelemeden geçmedi.
@@ -138,7 +139,7 @@ Depoda yalnız sentetik veri vardır; gerçek örneklerle denemeler depo dışı
 
 | Hedef | Test | Sonuç |
 |---|---|---|
-| `pf_xmldsig` | Birim testleri (base64, UUID, tarih, tutar, kod) | 13/13 |
+| `pf_xmldsig` | Birim testleri (base64, UUID, tarih, tutar, kod, onaltılık tablo, SignedInfo özetinin düz özetle karşılaştırması) | 17/17 |
 | `pf_efi` | İstek okuyucu (sahte öznitelik, tekrar, eksik, kapanmayan etiket, tek tırnak) ve birleştirme yardımcıları (sıralı liste, dilim birleştirme) | 14/14 |
 | İdare yanıtı | Kabul/ret: sahte imza, yanlış anahtar, bozuk alan | 7/7 |
 | Mükellef isteği | Kabul/ret + "tutar gibi görünen metin" fark testi | 9/9 |
