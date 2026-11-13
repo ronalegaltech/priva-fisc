@@ -40,7 +40,9 @@ step "pf_efi unit tests"           in_dir noir/pf_efi nargo test
 step "python hash against circuits" python3 tools/efi/test_poseidon2.py
 step "authority receipt"           python3 tools/efi/test_leaf_response.py
 step "taxpayer request"            python3 tools/efi/test_leaf_request.py
+step "buyer named in a request"    python3 tools/efi/test_buyer.py
 step "1 invoice"                   python3 tools/efi/test_batch.py --k 1
+step "1 invoice to one buyer"      python3 tools/efi/test_debtor.py
 step "invoice signed again"        python3 tools/efi/test_replay.py
 step "spot check and comparison"   python3 tools/efi/test_opening.py
 step "command line on files"       python3 tools/test_cli.py
@@ -48,6 +50,7 @@ step "aggregation, leaves of 1"    python3 tools/efi/test_agg.py
 
 if [ "${1:-}" = "full" ]; then
     step "10 invoices"                 python3 tools/efi/test_batch.py --k 10
+    step "10 invoices to one buyer"    python3 tools/efi/test_debtor.py --k 10
     step "aggregation, leaves of 10"   python3 tools/efi/test_agg.py --k 10
     step "registry contract"           in_dir starknet/pf_registry snforge test
     step "local Starknet network"      sh tools/starknet/devnet_demo.sh

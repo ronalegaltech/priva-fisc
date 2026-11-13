@@ -37,6 +37,22 @@ side of that choice: the receipt code is printed on the invoice, so someone who 
 context can tell whether that invoice is in a batch proof. An aggregate proof publishes no
 per-invoice nullifiers.
 
+### A second statement: invoices to one buyer
+
+The circuits `debtor_k1` and `debtor_k10` say something else about a set of invoices: each was
+issued to one named buyer, each has its receipt, no receipt is used twice, and their totals (none
+negative) add up to at least a threshold. The invoices need not be consecutive or come from one
+device. The verifier sees the number of invoices, a tag it can recompute from the buyer's tax
+number and its context, and a nullifier and an opening commitment per invoice. A nullifier is the
+same value as in a batch proof, so an invoice shown in one kind of proof is recognised in the
+other.
+
+This is what a financier of receivables asks a seller about one debtor. It is a lower bound on
+what was invoiced to that buyer: it does not say these are all the invoices to that buyer, and it
+says nothing about credit notes. The buyer is the taxpayer's word like the total, to be confirmed
+by opening invoices; and the tag hides the buyer only from someone who cannot guess the tax
+number. So far there are circuits and tests for this statement; `pf.py` does not produce it yet.
+
 ## What a proof does not say
 
 - That the authority saw the content of an invoice. The authority's signature covers only the

@@ -5,9 +5,10 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | Package | Kind | What it does |
 |---|---|---|
 | `pf_xmldsig` | library | Enveloped XML-DSig with exclusive C14N, SHA-256 and RSA-2048 PKCS#1 v1.5: rebuilds the canonical `SignedInfo` from a fixed template around the document digest, checks the signature, hashes the signer key. The first 512 bytes of `SignedInfo` never change, so their SHA-256 state is a constant and only the last three blocks are hashed in the circuit. Parsers for UUIDs, timestamps, amounts and registration codes that constrain every character. |
-| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
+| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `buyer.nr` reads the buyer named in it; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `debtor.nr` is the statement over invoices issued to one buyer; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
+| `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (375,992 and 3,664,134 gates). Executed by the tests; the command-line tool does not produce these proofs yet. |
 | `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices (the 10-slot leaf may hold fewer), publishes a blinded commitment to the run. |
 | `agg_node` | circuit | Joins two adjacent runs, each proved by a leaf or by another node. |
 | `agg_sorted_s4096` | circuit | Up to 4,096 receipt codes sorted strictly increasing. |
@@ -15,6 +16,7 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | `agg_leaf_k*_open`, `agg_sorted_s4096_open` | helper | Executed by the prover to get the private inputs of the next proof up. Never proved, never shared. |
 | `spot_open_k1`, `spot_open_k10` | circuit | Spot check against an aggregated proof: an opened invoice sits under the published root; whether it is the first, the last, and whether it covers the point of the total the verifier drew. About 8,000 gates. |
 | `open_invoice`, `poseidon2_check` | helper | Circuit forms of the opening commitment and of the hash. Executed only by `tools/efi/test_poseidon2.py`, which checks the Python implementation the tools use against them. |
+| `buyer_check` | helper | The buyer identifier of one whole request, as `buyer.nr` reads it (45,712 gates for a 2,048-byte request). Executed only by `tools/efi/test_buyer.py`, which checks the Python reference (`tools/efi/buyer.py`) against it. |
 | `rsa_key_hash` | helper | Key hash of an RSA modulus, as the circuits publish it. |
 | `leaf_request_v0`, `leaf_response_v0` | circuit | A request or a receipt on its own. Used for component tests and benchmarks. |
 

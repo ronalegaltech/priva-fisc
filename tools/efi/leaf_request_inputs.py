@@ -114,7 +114,10 @@ def build_request(key, c, tricky: bool):
     etree.SubElement(inv, EFI + "Seller", IDType="TIN", IDNum=c["tin"], Name="Sintetički prodavac d.o.o.",
                      Address="Ulica bb", Town="Budva", Country="MNE")
     buyer_name = 'Kupac "A&B" > d.o.o.' if tricky else "Sintetički kupac d.o.o."
-    etree.SubElement(inv, EFI + "Buyer", IDType="TIN", IDNum="12345678", Name=buyer_name)
+    # c["buyer"]: {"type", "num"} to name another buyer, None for an invoice without one (retail sale).
+    buyer = c.get("buyer", {"type": "TIN", "num": "12345678"})
+    if buyer is not None:
+        etree.SubElement(inv, EFI + "Buyer", IDType=buyer["type"], IDNum=buyer["num"], Name=buyer_name)
     items = etree.SubElement(inv, EFI + "Items")
     names = ['Usluga TotPrice="9.99"', 'Stavka > InvOrdNum="3"'] if tricky else ["Pravna usluga"]
     for n in names:
