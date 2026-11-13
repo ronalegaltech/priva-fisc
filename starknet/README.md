@@ -13,6 +13,7 @@ Do not edit the generated packages; regenerate them. They are tested through `pf
 (cd starknet/pf_registry && snforge test)      # 16 tests against real proofs
 sh tools/starknet/refresh_fixture.sh           # after any circuit change
 sh tools/starknet/devnet_demo.sh               # the whole flow on a local network
+sh tools/starknet/sepolia_demo.sh              # the same flow on Starknet Sepolia; needs a funded account
 ```
 
 A verifier embeds its circuit's verification key. After any change under `noir/`, run
@@ -23,6 +24,12 @@ deploy, list the authority key, submit (accepted: about 865M L2 gas for the batc
 an aggregate of 25), submit the same proof again (refused with `invoice already presented`). The
 cost of an aggregate does not depend on how many invoices it covers. Starknet documents a limit of
 1.11 * 10^9 L2 gas per transaction. Nothing is deployed to a public network.
+
+The same flow is scripted for the public test network in `tools/starknet/sepolia_demo.sh` and has
+been rehearsed on a local network, including deploying the account. Declaring is most of the cost:
+about 1.9 * 10^9 L2 gas for the ECIP helper, 4.8 * 10^9 for each verifier and 0.5 * 10^9 for the
+registry (measured locally). At the Sepolia gas price of 13 Nov 2026 the whole run comes to about
+330 STRK, or about 195 STRK without the aggregate and its verifier.
 
 The registry records the context a proof was made for; it cannot know which context a relying
 party issued. The first attestation in a context decides which kind of proof that context takes,

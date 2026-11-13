@@ -194,7 +194,7 @@ Depoda yalnız sentetik veri vardır; gerçek örneklerle denemeler depo dışı
 ## 9. Sıradaki adımlar
 
 0. Alıcıya dair ifadeler: (a) tek alıcıya kesilen faturalar hazır (4.2b: devre, komut satırı, ölçüm); eksik olan açma aracı ve Starknet defteri. (b) En büyük alıcının toplamdaki payının bir oranın altında olduğu (yoğunlaşma): faturalar alıcıya göre sıralı listeyle gruplanır.
-1. Doğrulayıcıları ve defter sözleşmesini Starknet Sepolia'ya yüklemek ve gerçek ücreti ölçmek.
+1. Doğrulayıcıları ve defter sözleşmesini Starknet Sepolia'ya yüklemek ve gerçek ücreti ölçmek. Betik hazır (`tools/starknet/sepolia_demo.sh`) ve yerel ağda hesap açma dahil prova edildi; yüklemenin tamamı 13.11.2026 fiyatıyla yaklaşık 330 STRK tutuyor (iki doğrulayıcının bildirimi yaklaşık 115'er STRK). Eksik olan test jetonu.
 2. Test ortamından kendi kestiğimiz 10 ardışık gerçek faturayla demo.
 3. Örnek açtırmada idarenin kamu servisine sorgunun araca bağlanması (karşılaştırmanın kendisi yapıldı; sorgu için idarenin servis biçimi gerçek veriyle görülmeli).
 4. İade faturaları sorunu (4.4): brüt toplamın gerçek fatura ve iade çiftleriyle büyütülmesi ve yeniden imzalanarak küçültülmüş iade faturası. Bakılacak yollar: brüt toplam için açık bir üst sınır; idare kaydının bir faturanın sonradan düzeltildiğini gösterip göstermediği (gerçek veriyle görülmeli); 10'luk kanıtlarda tutarla sorma.
