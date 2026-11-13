@@ -8,7 +8,7 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `buyer.nr` reads the buyer named in it; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `debtor.nr` is the statement over invoices issued to one buyer; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
-| `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (375,992 and 3,664,134 gates). Executed by the tests; the command-line tool does not produce these proofs yet. |
+| `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (375,992 and 3,664,134 gates; about 4 s and 33 s with `pf.py prove --buyer`). |
 | `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices (the 10-slot leaf may hold fewer), publishes a blinded commitment to the run. |
 | `agg_node` | circuit | Joins two adjacent runs, each proved by a leaf or by another node. |
 | `agg_sorted_s4096` | circuit | Up to 4,096 receipt codes sorted strictly increasing. |

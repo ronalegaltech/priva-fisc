@@ -6,7 +6,8 @@
 Writes an invented signed request and receipt to disk, proves from the files, and checks what
 `pf.py verify` prints and returns: for the right and for another context, with the taxpayer's
 certificate and with someone else's, for an altered public value, and when the claim is false.
-One invoice, so only the 1-invoice circuit is used.
+Then the same invoice as a statement about its buyer. One invoice, so only the 1-invoice circuits
+are used.
 """
 import os
 import random
@@ -75,6 +76,24 @@ def main():
         report("verify with a ledger: the same proof again (exit 5)", code == 5 and "presented before       : YES" in out, out[-300:])
         code, out = pf("verify", proof, "--context", "not-hex")
         report("verify: a mistyped context prints no verdict", code != 0 and "PROOF VALID" not in out, out[-200:])
+
+        # The same invoice as a statement about its buyer (the invented requests name TIN:12345678).
+        to_buyer = os.path.join(d, "to_buyer")
+        code, out = pf("prove", "--buyer", "TIN:12345678", "--out", to_buyer, "--threshold", total, *common)
+        report("one buyer: proof from the signed files", code == 0 and os.path.exists(os.path.join(to_buyer, "proof")), out[-200:])
+        code, out = pf("verify", to_buyer, "--context", "0x33", "--buyer", "TIN:12345678")
+        report("one buyer: valid for the buyer expected (exit 2)", code == 2 and "PROOF VALID" in out and "(the one expected)" in out, out[-300:])
+        code, out = pf("verify", to_buyer, "--context", "0x33")
+        report("one buyer: without --buyer the tag is shown, not compared", code == 2 and "not compared: no --buyer given" in out, out[-300:])
+        code, out = pf("verify", to_buyer, "--context", "0x33", "--buyer", "TIN:87654321")
+        report("one buyer: another buyer expected (exit 6)", code == 6 and "issued to somebody else" in out, out[-300:])
+        code, out = pf("verify", to_buyer, "--context", "0x33", "--buyer", "TIN:12345678", "--ledger", ledger)
+        report("one buyer: the invoice was already shown in a batch proof (exit 5)", code == 5 and "presented before       : YES" in out, out[-300:])
+        code, out = pf("verify", proof, "--context", "0x33", "--buyer", "TIN:12345678")
+        report("a batch proof says nothing about buyers (exit 6)", code == 6 and "says nothing about buyers" in out, out[-300:])
+        code, out = pf("prove", "--buyer", "TIN:87654321", "--out", os.path.join(d, "wrong_buyer"), "--threshold", total, *common)
+        report("one buyer: an invoice issued to somebody else is refused", code != 0 and "another buyer" in out
+               and not os.path.exists(os.path.join(d, "wrong_buyer", "proof")), out[-200:])
 
         # A directory with no proof in it, named after the words a careless check would look for.
         trap = os.path.join(d, "Proof verified successfully")
