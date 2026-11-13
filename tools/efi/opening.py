@@ -12,7 +12,7 @@ separate step).
 
   draw                                                                           (verifier)
   reveal  --record RECORD.json (--index I | --seed SEED --draw J) --out OPENING.json   (prover)
-  check   --opening OPENING.json --proof DIR (--ordinal N | --first | --last | --seed SEED --draw J)
+  check   --opening OPENING.json --proof DIR (--ordinal N | --index I | --first | --last | --seed SEED --draw J)
   compare --opening OPENING.json --authority LOOKUP.json [--taxpayer-cert FILE]  (verifier)
 
 RECORD.json is the file written by `pf.py prove --keep`; it stays with the prover. I counts the
@@ -24,6 +24,11 @@ the opened invoice to carry that ordinal number; --first and --last require it t
 the last invoice the proof covers. When a proof does not start at ordinal 1 the verifier asks for
 the first invoice first: its ordinal and the published count give the range to draw the other
 ordinals from.
+
+A proof about one buyer (pf.py prove --buyer) is opened the same way, from the record written by
+--keep. Its invoices are not consecutive, so the verifier asks by position: --index I is the
+invoice in place I of the proof, counted from 0. The opening then also names the buyer, and the
+buyer is part of what is checked against the proof. --index works for a batch proof too.
 
 Asking by amount (aggregated proofs). `draw` prints a random seed. The seed fixes a sequence of
 points of the sum of all positive totals, numbered 1, 2, ...; for draw J the prover must open the
@@ -39,8 +44,10 @@ does not draw again and does not accept a new proof in its place.
 An opening that matched is what the taxpayer proved, not yet what the authority has. The verifier
 looks the invoice up at the tax authority by its IIC and writes what the authority shows into a
 small file: {"iic", "fic", "ordinal", "issue_date_time", "total", "business_unit", "device",
-"seller_tin"}. `compare` prints AGREES, or DIFFERENT followed by the names of the fields that
-differ (never their values). With --taxpayer-cert it also requires the seller's tax number in the
+"seller_tin"}, and "buyer" (written like TIN:02345678) if the authority shows one. `compare`
+prints AGREES, or DIFFERENT followed by the names of the fields that differ (never their values).
+For an opening that names a buyer, the buyer is compared when the record names one; when it does
+not, the tool says that the buyer was not compared. With --taxpayer-cert it also requires the seller's tax number in the
 authority's record to be the one in the taxpayer's certificate; without it the seller is not
 compared and the tool says so. This tool does not query the authority.
 
@@ -66,11 +73,17 @@ import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import buyer as buyer_reader  # noqa: E402
 import poseidon2  # noqa: E402
 
 OPEN_PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "open_invoice"))
 DOMAIN_OPENING = int.from_bytes(b"PF-OPENING", "big")
 ORDER = ("iic", "fic", "ordinal", "issue_local_ts", "issue_tz", "total_negative", "total_cents", "unit", "device", "salt")
+# In a proof about one buyer the commitment also binds the buyer and has no sign: that statement
+# admits no negative total (noir/pf_efi/src/debtor.nr).
+DOMAIN_OPENING_BUYER = int.from_bytes(b"PF-OPENBUY", "big")
+ORDER_BUYER = ("iic", "fic", "ordinal", "issue_local_ts", "issue_tz", "total_cents", "unit", "device", "buyer", "salt")
+BUYER_FORM = re.compile(r"[A-Z]{2,4}:[0-9A-Za-z]{1,20}")
 
 
 def reveal(prover_path, index):
@@ -120,7 +133,12 @@ def field_values(o):
     for code in (o["business_unit"], o["device"]):
         if not re.fullmatch(r"[a-z]{2}\d{3}[a-z]{2}\d{3}", code):
             raise ValueError("a registration code is not in the expected form")
-    return {
+    named = {}
+    if "buyer" in o:
+        if not isinstance(o["buyer"], str) or not BUYER_FORM.fullmatch(o["buyer"]):
+            raise ValueError("buyer is not in the expected form")
+        named = {"buyer": hex(buyer_reader.pack(*o["buyer"].split(":")))}
+    return named | {
         "iic": hex(int(o["iic"], 16)),
         "fic": hex(int(o["fic"].replace("-", ""), 16)),
         "ordinal": str(o["ordinal"]),
@@ -162,6 +180,10 @@ def positive_cents(o):
 def recompute(o):
     """The opening commitment of these values, as the circuits compute it."""
     values = field_values(o)
+    if "buyer" in o:
+        if values["total_negative"] != "0":
+            raise ValueError("a statement about one buyer holds no negative total")
+        return poseidon2.hash([DOMAIN_OPENING_BUYER] + [int(values[name], 0) for name in ORDER_BUYER])
     return poseidon2.hash([DOMAIN_OPENING] + [int(values[name], 0) for name in ORDER])
 
 
@@ -263,25 +285,43 @@ def reveal_from_record(record_path, index=None, point=None, seed=None, draw=None
     return o
 
 
-def check_against_proof(o, proof_dir, ordinal=None, edge=None, point=None, seed=None, draw=None, verified=False):
+def check_against_proof(o, proof_dir, ordinal=None, edge=None, point=None, seed=None, draw=None, verified=False, index=None):
     """True if the proof in `proof_dir` is valid, the opening is one it commits to, and it is the
-    invoice asked for: the one with this `ordinal`, the "first" / "last" invoice of the proof
-    (`edge`), or the one that covers draw number `draw` of `seed`. `verified=True` skips the check
-    of the proof itself, for a caller that has just done it."""
+    invoice asked for: the one with this `ordinal`, the one in place `index` of a batch proof or of
+    a proof about one buyer, the "first" / "last" invoice of the proof (`edge`), or the one that
+    covers draw number `draw` of `seed`. `verified=True` skips the check of the proof itself, for a
+    caller that has just done it."""
     import agg  # here, not at the top: agg.py uses this module too
     if ordinal is not None and o.get("ordinal") != ordinal:
         return False
     values = agg.fields_of(os.path.join(proof_dir, "public_inputs"))
-    kind = agg.kind_of(values)
     commitment = recompute(o)
+    position = o.get("position", -1)
+    slots = agg.one_buyer_slots(values)
+    if slots is not None:
+        # Proof about one buyer: threshold, context, year, two key hashes, the number of invoices,
+        # the buyer tag, then K nullifiers and K commitments with zeros in the unused places.
+        if "buyer" not in o or not (verified or agg.verify_one_buyer(proof_dir, slots)):
+            return False
+        count = values[5]
+        if point is not None or seed is not None or type(position) is not int or not 0 <= position < count:
+            return False
+        if (index is not None and position != index) or (edge and position != (0 if edge == "first" else count - 1)):
+            return False
+        return values[7 + slots + position] == commitment
+    kind = agg.kind_of(values)
     if kind != "aggregate":
         # Batch proof: threshold, context, year, two key hashes, a flag, K nullifiers, K commitments.
         if not (verified or agg.verify_batch(proof_dir)):
             return False
-        position = o.get("position", -1)
         if point is not None or seed is not None or (edge and position != (0 if edge == "first" else kind - 1)):
             return False
-        return isinstance(position, int) and 0 <= position < kind and values[6 + kind + position] == commitment
+        if index is not None and position != index:
+            return False
+        return type(position) is int and 0 <= position < kind and values[6 + kind + position] == commitment
+    if index is not None:
+        # An aggregated proof does not publish the places of its invoices.
+        return False
     ok, st, _, leaf_size = agg.verify(proof_dir) if not verified else (True, agg.decode(values), [], agg.leaf_size_of(values))
     if not ok or leaf_size is None:
         return False
@@ -345,6 +385,8 @@ def differences(o, lookup, certificate_subject=None):
             same = False
         if not same:
             out.append(name)
+    if "buyer" in o and isinstance(lookup, dict) and "buyer" in lookup and lookup["buyer"] != o["buyer"]:
+        out.append("buyer")
     if certificate_subject is not None:
         # The certificate names its holder by tax number in organizationIdentifier (2.5.4.97),
         # written VATME-<number>.
@@ -373,6 +415,7 @@ def main():
     target.add_argument("--proof")
     target.add_argument("--commitment")
     c.add_argument("--ordinal", type=int)
+    c.add_argument("--index", type=int, help="place of the invoice in a batch proof or a proof about one buyer, from 0")
     c.add_argument("--first", action="store_true")
     c.add_argument("--last", action="store_true")
     c.add_argument("--seed")
@@ -393,11 +436,15 @@ def main():
             import keyhash
             subject = keyhash.describe(keyhash.load_cert(a.taxpayer_cert, a.taxpayer_cert.lower().endswith(".xml")))["subject"]
         with open(a.opening) as f, open(a.authority) as g:
-            differing = differences(json.load(f), json.load(g), subject)
+            o, lookup = json.load(f), json.load(g)
+        differing = differences(o, lookup, subject)
+        notes = [] if subject is not None else ["seller not compared: no --taxpayer-cert given"]
+        if isinstance(o, dict) and "buyer" in o and not (isinstance(lookup, dict) and "buyer" in lookup):
+            notes.append("buyer not compared: the authority's record given here names no buyer")
         if differing:
             print("DIFFERENT: " + ", ".join(differing))
         else:
-            print("AGREES" if subject is not None else "AGREES (seller not compared: no --taxpayer-cert given)")
+            print("AGREES" + (" (" + "; ".join(notes) + ")" if notes else ""))
         return 1 if differing else 0
 
     if a.cmd == "reveal":
@@ -416,20 +463,20 @@ def main():
         return 0
 
     by_draw = a.seed is not None or a.draw is not None
-    asked = sum([a.ordinal is not None, a.first, a.last, by_draw])
+    asked = sum([a.ordinal is not None, a.index is not None, a.first, a.last, by_draw])
     if by_draw and (a.seed is None or a.draw is None):
         ap.error("a draw is named by --seed SEED --draw J")
-    if a.commitment and (a.first or a.last or by_draw):
-        ap.error("--first, --last and draws need the proof: use --proof DIR")
+    if a.commitment and (a.first or a.last or by_draw or a.index is not None):
+        ap.error("--index, --first, --last and draws need the proof: use --proof DIR")
     if a.proof and asked != 1:
-        ap.error("with --proof, say which invoice was asked for, once: --ordinal N, --first, --last or --seed SEED --draw J")
+        ap.error("with --proof, say which invoice was asked for, once: --ordinal N, --index I, --first, --last or --seed SEED --draw J")
     with open(a.opening) as f:
         o = json.load(f)
     edge = "first" if a.first else "last" if a.last else None
     import agg
     try:
         if a.proof:
-            ok = check_against_proof(o, a.proof, ordinal=a.ordinal, edge=edge, seed=a.seed, draw=a.draw)
+            ok = check_against_proof(o, a.proof, ordinal=a.ordinal, edge=edge, seed=a.seed, draw=a.draw, index=a.index)
         else:
             ok = recompute(o) == int(a.commitment, 16) and (a.ordinal is None or o.get("ordinal") == a.ordinal)
     except (KeyError, ValueError, TypeError, AttributeError, OSError, agg.StepFailed):

@@ -53,8 +53,12 @@ says nothing about credit notes. The buyer is the taxpayer's word like the total
 by opening invoices; and the tag hides the buyer only from someone who cannot guess the tax
 number. `pf.py prove --buyer TIN:02345678 ...` makes such a proof from 1 to 10 signed pairs and
 `pf.py verify --buyer TIN:02345678` refuses one about somebody else (exit status 6). It takes about
-4 s for one invoice and 33 s for ten on the laptop of the measurements below, under 4 GB. The spot
-check tool (`opening.py`) and the Starknet registry do not handle this kind of proof yet.
+4 s for one invoice and 33 s for ten on the laptop of the measurements below, under 4 GB.
+
+A spot check works as for a batch, with one difference: the invoices are not consecutive, so the
+verifier asks for the invoice in a given place of the proof (`opening.py check --proof DIR
+--index I`). What the taxpayer opens then names the buyer too, and the buyer is checked against
+the proof with the rest. The Starknet registry does not handle this kind of proof yet.
 
 ## What a proof does not say
 

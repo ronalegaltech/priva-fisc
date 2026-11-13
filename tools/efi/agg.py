@@ -194,6 +194,20 @@ def kind_of(values):
     raise StepFailed(f"unexpected number of public values ({len(values)})")
 
 
+def one_buyer_slots(values):
+    """Slots of the circuit behind a proof about one buyer, or None if the values are of another kind."""
+    return next((k for k in BATCH_SIZES if len(values) == 7 + 2 * k), None)
+
+
+def verify_one_buyer(proof_dir, k):
+    """True if the proof verifies under the key derived here from noir/debtor_k{k}."""
+    name = f"debtor_k{k}"
+    with tempfile.TemporaryDirectory() as tmp:
+        run(["bb", "write_vk", "-b", compiled(name), "-o", tmp, "-t", "evm"], what=f"key of {name}")
+        return bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
+                           os.path.join(proof_dir, "public_inputs"))
+
+
 def verify_batch(proof_dir):
     """True if the batch proof in `proof_dir` verifies under a locally derived key."""
     k = kind_of(fields_of(os.path.join(proof_dir, "public_inputs")))

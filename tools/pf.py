@@ -107,13 +107,8 @@ def parse_buyer(text):
     return buyer_reader.pack(*text.split(":"))
 
 
-def one_buyer_slots(values):
-    """Slots of the circuit behind a proof about one buyer, or None if the values are of another kind."""
-    return next((k for k in SIZES if len(values) == 7 + 2 * k), None)
-
-
 def decode_one_buyer(values):
-    k, count = one_buyer_slots(values), values[5]
+    k, count = agg.one_buyer_slots(values), values[5]
     if not 1 <= count <= k:
         sys.exit("unexpected number of invoices in the public values")
     return {
@@ -129,15 +124,6 @@ def decode_one_buyer(values):
         "nullifiers": [hex(v) for v in values[7:7 + count]],
         "opening_commitments": [hex(v) for v in values[7 + k:7 + k + count]],
     }
-
-
-def verify_one_buyer(proof_dir, k):
-    """True if the proof verifies under the key derived here from noir/debtor_k{k}."""
-    name = f"debtor_k{k}"
-    with tempfile.TemporaryDirectory() as tmp:
-        agg.run(["bb", "write_vk", "-b", agg.compiled(name), "-o", tmp, "-t", "evm"], what=f"key of {name}")
-        return agg.bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
-                               os.path.join(proof_dir, "public_inputs"))
 
 
 def prove_one_buyer(a):
@@ -323,10 +309,10 @@ def verify(a):
             ledger = json.load(f)
 
     values = read_values(os.path.join(a.dir, "public_inputs"))
-    one_buyer = one_buyer_slots(values)
+    one_buyer = agg.one_buyer_slots(values)
     kind = None if one_buyer else agg.kind_of(values)
     if one_buyer:
-        if not verify_one_buyer(a.dir, one_buyer):
+        if not agg.verify_one_buyer(a.dir, one_buyer):
             print("PROOF INVALID")
             return 1
         st = decode_one_buyer(values)
