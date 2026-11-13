@@ -29,12 +29,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pf_debtor_k10_verifier"
+version = "0.1.0"
+dependencies = [
+ "garaga",
+]
+
+[[package]]
 name = "pf_registry"
 version = "0.1.0"
 dependencies = [
  "garaga",
  "pf_agg_top_verifier",
  "pf_batch_k10_verifier",
+ "pf_debtor_k10_verifier",
  "snforge_std",
 ]
 

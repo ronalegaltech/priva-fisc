@@ -5,10 +5,11 @@
 #
 #   . tools/toolchain.env && sh tools/starknet/refresh_fixture.sh
 #
-# Garaga produces two verifiers: one for the 10-invoice batch circuit and one for the top circuit
-# of the aggregation. The fixtures are proofs over invented invoices signed by throw-away keys
-# (10 invoices for the batch, 20 in two leaves for the aggregate), both made for the same context
-# (ASCII "PF-TEST") so that the tests can show a context refusing the other kind of proof.
+# Garaga produces three verifiers: for the 10-invoice batch circuit, for the top circuit of the
+# aggregation and for the circuit about invoices issued to one buyer. The fixtures are proofs over
+# invented invoices signed by throw-away keys (10 invoices for the batch, 20 in two leaves for the
+# aggregate, 3 invoices to one buyer), all made for the same context (ASCII "PF-TEST") so that the
+# tests can show which kinds of proof a context takes together.
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="$(mktemp -d)"
@@ -49,5 +50,9 @@ calldata pf_batch_k10_verifier "$WORK/batch" "$TESTS/proof_calldata.txt"
 python3 "$ROOT/tools/efi/agg.py" prove --k 10 --n 20 --synthetic --context "$CONTEXT" --out "$WORK/agg" >/dev/null
 gen pf_agg_top_verifier "$ROOT/noir/agg_top/target/agg_top.json" PfAggTopVerifier
 calldata pf_agg_top_verifier "$WORK/agg" "$TESTS/agg_proof_calldata.txt"
+
+python3 "$ROOT/tools/pf.py" prove --synthetic 3 --buyer any --context "$CONTEXT" --out "$WORK/debtor" >/dev/null
+gen pf_debtor_k10_verifier "$ROOT/noir/debtor_k10/target/debtor_k10.json" PfDebtorK10Verifier
+calldata pf_debtor_k10_verifier "$WORK/debtor" "$TESTS/debtor_proof_calldata.txt"
 
 echo "verifiers and fixtures refreshed; now run: (cd starknet/pf_registry && snforge test)"

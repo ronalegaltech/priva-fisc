@@ -1,6 +1,6 @@
-//! Registry tests against real proofs (synthetic invoices): a 10-invoice batch proof and an
-//! aggregate proof of 20 invoices (two leaves of 10). Regenerate the fixtures with tools/starknet/refresh_fixture.sh after
-//! any circuit change.
+//! Registry tests against real proofs (synthetic invoices): a 10-invoice batch proof, an
+//! aggregate proof of 20 invoices (two leaves of 10) and a proof about 3 invoices issued to one
+//! buyer. Regenerate the fixtures with tools/starknet/refresh_fixture.sh after any circuit change.
 
 use pf_batch_k10_verifier::honk_verifier::{
     IUltraKeccakZKHonkVerifierDispatcherTrait, IUltraKeccakZKHonkVerifierLibraryDispatcher,
@@ -29,6 +29,10 @@ fn aggregate_proof() -> Span<felt252> {
     read_txt(@FileTrait::new("tests/agg_proof_calldata.txt")).span()
 }
 
+fn one_buyer_proof() -> Span<felt252> {
+    read_txt(@FileTrait::new("tests/debtor_proof_calldata.txt")).span()
+}
+
 fn values_of(verifier: ClassHash, proof: Span<felt252>) -> Span<u256> {
     IUltraKeccakZKHonkVerifierLibraryDispatcher { class_hash: verifier }
         .verify_ultra_keccak_zk_honk_proof(proof)
@@ -40,6 +44,7 @@ struct Setup {
     registry: IPrivaFiscRegistryDispatcher,
     batch_values: Span<u256>,
     aggregate_values: Span<u256>,
+    one_buyer_values: Span<u256>,
 }
 
 /// Which of the three circuit key hashes the registry is deployed with a wrong value for.
@@ -58,7 +63,9 @@ fn setup_with(wrong: Wrong) -> Setup {
     let batch_class = *declare("PfBatchK10Verifier").unwrap().contract_class().class_hash;
     let aggregate_class = *declare("PfAggTopVerifier").unwrap().contract_class().class_hash;
     let batch_values = values_of(batch_class, batch_proof());
+    let one_buyer_class = *declare("PfDebtorK10Verifier").unwrap().contract_class().class_hash;
     let aggregate_values = values_of(aggregate_class, aggregate_proof());
+    let one_buyer_values = values_of(one_buyer_class, one_buyer_proof());
     let leaf: u256 = if wrong == Wrong::Leaf { 1 } else { *aggregate_values.at(3) };
     let node: u256 = if wrong == Wrong::Node { 1 } else { *aggregate_values.at(4) };
     let sorted: u256 = if wrong == Wrong::Sorted { 1 } else { *aggregate_values.at(5) };
@@ -71,8 +78,14 @@ fn setup_with(wrong: Wrong) -> Setup {
     leaf.serialize(ref ctor);
     node.serialize(ref ctor);
     sorted.serialize(ref ctor);
+    one_buyer_class.serialize(ref ctor);
     let (address, _) = registry_class.deploy(@ctor).unwrap();
-    Setup { registry: IPrivaFiscRegistryDispatcher { contract_address: address }, batch_values, aggregate_values }
+    Setup {
+        registry: IPrivaFiscRegistryDispatcher { contract_address: address },
+        batch_values,
+        aggregate_values,
+        one_buyer_values,
+    }
 }
 
 fn setup() -> Setup {
@@ -102,6 +115,7 @@ fn test_batch_records_what_was_proved() {
     let a: Attestation = s.registry.get_attestation(1);
     assert(a.invoice_count == 10, 'invoice count');
     assert(!a.aggregated, 'not aggregated');
+    assert(a.buyer_tag == 0, 'no buyer tag');
     assert(a.year == 2026, 'year');
     assert(a.context == *s.batch_values.at(1), 'context');
     assert(a.taxpayer_key_hash == *s.batch_values.at(3), 'taxpayer key');
@@ -242,7 +256,7 @@ fn test_aggregate_with_unlisted_issuer_key_is_refused() {
 }
 
 // --- one kind of proof per context ---
-// The two fixtures are made for the same context (see refresh_fixture.sh).
+// The fixtures are made for the same context (see refresh_fixture.sh).
 
 #[test]
 fn test_context_remembers_its_kind() {
@@ -272,4 +286,83 @@ fn test_batch_is_refused_in_a_context_of_aggregates() {
     list_issuer_key(s.registry, *s.aggregate_values.at(7));
     s.registry.attest_aggregate(aggregate_proof());
     s.registry.attest_batch(batch_proof());
+}
+
+// --- invoices issued to one buyer ---
+
+#[test]
+fn test_one_buyer_records_what_was_proved() {
+    let s = setup();
+    let v = s.one_buyer_values;
+    assert(v.len() == 27, 'fixture: 27 public values');
+    assert(*v.at(5) == 3, 'fixture: 3 invoices');
+    assert(*v.at(7 + 3) == 0 && *v.at(17 + 3) == 0, 'fixture: unused places zero');
+    list_issuer_key(s.registry, *v.at(4));
+
+    start_cheat_caller_address(s.registry.contract_address, submitter());
+    let id = s.registry.attest_one_buyer(one_buyer_proof());
+    stop_cheat_caller_address(s.registry.contract_address);
+
+    assert(id == 1, 'first attestation id');
+    let a: Attestation = s.registry.get_attestation(1);
+    assert(a.invoice_count == 3, 'invoice count');
+    assert(a.buyer_tag == *v.at(6) && a.buyer_tag != 0, 'buyer tag');
+    assert(!a.aggregated && !a.starts_at_one, 'flags');
+    assert(a.context == *v.at(1), 'context');
+    assert(a.taxpayer_key_hash == *v.at(3), 'taxpayer key');
+    assert(a.issuer_key_hash == *v.at(4), 'issuer key');
+    assert(a.submitted_by == submitter(), 'submitter');
+    let mut i: u32 = 0;
+    while i != 3 {
+        assert(s.registry.is_nullifier_used(*v.at(7 + i)), 'nullifier recorded');
+        i += 1;
+    }
+    // The zero in an unused place is not a nullifier and is not written.
+    assert(!s.registry.is_nullifier_used(0), 'zero not recorded');
+}
+
+#[test]
+#[should_panic(expected: 'invoice already presented')]
+fn test_one_buyer_cannot_be_presented_twice() {
+    let s = setup();
+    list_issuer_key(s.registry, *s.one_buyer_values.at(4));
+    s.registry.attest_one_buyer(one_buyer_proof());
+    s.registry.attest_one_buyer(one_buyer_proof());
+}
+
+#[test]
+#[should_panic(expected: 'issuer key not registered')]
+fn test_one_buyer_with_unlisted_issuer_key_is_refused() {
+    let s = setup();
+    s.registry.attest_one_buyer(one_buyer_proof());
+}
+
+#[test]
+#[should_panic]
+fn test_batch_proof_is_not_a_one_buyer_proof() {
+    let s = setup();
+    list_issuer_key(s.registry, *s.batch_values.at(4));
+    s.registry.attest_one_buyer(batch_proof());
+}
+
+#[test]
+fn test_batches_and_one_buyer_proofs_share_a_context() {
+    let s = setup();
+    assert(*s.batch_values.at(1) == *s.one_buyer_values.at(1), 'fixtures: same context');
+    list_issuer_key(s.registry, *s.batch_values.at(4));
+    list_issuer_key(s.registry, *s.one_buyer_values.at(4));
+    s.registry.attest_batch(batch_proof());
+    s.registry.attest_one_buyer(one_buyer_proof());
+    assert(s.registry.context_kind(*s.batch_values.at(1)) == 1, 'one kind of nullifier');
+    assert(s.registry.attestation_count() == 2, 'both recorded');
+}
+
+#[test]
+#[should_panic(expected: 'context holds the other kind')]
+fn test_one_buyer_is_refused_in_a_context_of_aggregates() {
+    let s = setup();
+    list_issuer_key(s.registry, *s.aggregate_values.at(7));
+    list_issuer_key(s.registry, *s.one_buyer_values.at(4));
+    s.registry.attest_aggregate(aggregate_proof());
+    s.registry.attest_one_buyer(one_buyer_proof());
 }

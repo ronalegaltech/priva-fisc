@@ -7,6 +7,7 @@ edition = "2024_07"
 starknet = "2.21.0"
 pf_batch_k10_verifier = { path = "../pf_batch_k10_verifier" }
 pf_agg_top_verifier = { path = "../pf_agg_top_verifier" }
+pf_debtor_k10_verifier = { path = "../pf_debtor_k10_verifier" }
 garaga = { git = "https://github.com/keep-starknet-strange/garaga.git", rev = "d97b4d3269fe83ac1a4587d23469e78e9ebe20e9" }
 
 [dev-dependencies]
@@ -18,11 +19,12 @@ sierra-replace-ids = false
 
 [[target.starknet-contract]]
 casm = true
-# Also emit the two verifiers and the ECIP helper class so everything can be declared from here.
+# Also emit the verifiers and the ECIP helper class so everything can be declared from here.
 build-external-contracts = [
     "garaga::universal_ecip::UniversalECIP",
     "pf_batch_k10_verifier::honk_verifier::PfBatchK10Verifier",
     "pf_agg_top_verifier::honk_verifier::PfAggTopVerifier",
+    "pf_debtor_k10_verifier::honk_verifier::PfDebtorK10Verifier",
 ]
 
 [target-defaults.test]
@@ -30,4 +32,5 @@ build-external-contracts = [
     "garaga::universal_ecip::UniversalECIP",
     "pf_batch_k10_verifier::honk_verifier::PfBatchK10Verifier",
     "pf_agg_top_verifier::honk_verifier::PfAggTopVerifier",
+    "pf_debtor_k10_verifier::honk_verifier::PfDebtorK10Verifier",
 ]
