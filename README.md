@@ -221,9 +221,11 @@ has been deployed to a public network.
   has been run.
 - The tool needs both signed files of every invoice: the taxpayer's request and the authority's
   receipt. The receipt cannot be made again later. Montenegro's fiscalization law does not oblige
-  the taxpayer or the invoicing software to keep these messages, and we have not yet confirmed
-  with software vendors which products keep them. Where they were not kept, nothing can be
-  proved about past invoices.
+  the taxpayer or the invoicing software to keep these messages; the tax administration's
+  functional specification (v4.2) asks the software for an electronic journal of invoices, not
+  for the signed messages, while the administration's own system keeps every request it receives
+  in full. We have not yet confirmed with software vendors which products keep them. Where they
+  were not kept, nothing can be proved about past invoices.
 - The only real authority key in the registry is the 2020 test-environment signer. Receipts from
   a test environment can be had for invented invoices, so `verify` does not treat it as a
   production key.
