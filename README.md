@@ -37,6 +37,14 @@ side of that choice: the receipt code is printed on the invoice, so someone who 
 context can tell whether that invoice is in a batch proof. An aggregate proof publishes no
 per-invoice nullifiers.
 
+Verifiers who want to catch one invoice being presented to several of them, financiers of
+receivables for instance, have to use one context and one ledger between them: only then is the
+nullifier of an invoice the same for all, and the second presentation refused. That has a price.
+Everyone who shares the context sees what the others' proofs published: the taxpayer's key hash,
+the threshold, the number of invoices, and a buyer tag they can test against any tax number they
+care to guess. A ledger that keeps only nullifiers, or a statement made for the verifier's own
+context with nullifiers made for the shared one, would show less; neither is built.
+
 ### A second statement: invoices to one buyer
 
 The circuits `debtor_k1` and `debtor_k10` say something else about a set of invoices: each was
