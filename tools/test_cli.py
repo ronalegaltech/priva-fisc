@@ -136,6 +136,16 @@ def main():
             code, out = tool("compare", "--opening", shown, "--authority", lookup)
             report(f"one buyer: {label}", code == want_code and want in out and (extra == {} or out.strip() == want), out[-200:])
 
+        # Invented invoices written to disk by the generator the demos use.
+        written = os.path.join(d, "written")
+        r = subprocess.run([sys.executable, os.path.join(HERE, "efi", "synth_files.py"), "--n", "1", "--out", written],
+                           capture_output=True, text=True)
+        summary = json.load(open(os.path.join(written, "summary.json"))) if r.returncode == 0 else {}
+        code, out = pf("prove", "--buyer", summary.get("buyer", "TIN:0"), "--out", os.path.join(d, "from_written"),
+                       "--threshold", summary.get("total", "0"), "--year", str(summary.get("year", 0)), "--context", "0x44",
+                       os.path.join(written, "request_01.xml"), os.path.join(written, "receipt_01.xml"))
+        report("generated files: a proof about their buyer at exactly their total", r.returncode == 0 and code == 0, (r.stderr + out)[-200:])
+
         # A directory with no proof in it, named after the words a careless check would look for.
         trap = os.path.join(d, "Proof verified successfully")
         os.makedirs(trap)

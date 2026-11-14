@@ -11,7 +11,7 @@ Do not edit the generated packages; regenerate them. They are tested through `pf
 
 ```sh
 . tools/toolchain.env
-(cd starknet/pf_registry && snforge test)      # 22 tests against real proofs
+(cd starknet/pf_registry && snforge test)      # 24 tests against real proofs
 sh tools/starknet/refresh_fixture.sh           # after any circuit change
 sh tools/starknet/devnet_demo.sh               # the whole flow on a local network
 sh tools/starknet/sepolia_demo.sh              # the same flow on Starknet Sepolia; needs a funded account
@@ -23,7 +23,9 @@ A verifier embeds its circuit's verification key. After any change under `noir/`
 On a local network (starknet-devnet) the flow runs end to end for the three kinds of proof:
 declare, deploy, list the authority key, submit (accepted: about 865M L2 gas for the batch of 10,
 861M for 3 invoices to one buyer, 822M for an aggregate of 25), submit the same proof again
-(refused with `invoice already presented`). The
+(refused with `invoice already presented`). Three invoices of the batch, proved once more as
+invoices issued to their buyer, are refused the same way: a valid proof of another kind about
+invoices the registry has already recorded. The
 cost of an aggregate does not depend on how many invoices it covers. Starknet documents a limit of
 1.11 * 10^9 L2 gas per transaction. Nothing is deployed to a public network.
 

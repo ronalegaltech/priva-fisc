@@ -9,7 +9,9 @@
 # aggregation and for the circuit about invoices issued to one buyer. The fixtures are proofs over
 # invented invoices signed by throw-away keys (10 invoices for the batch, 20 in two leaves for the
 # aggregate, 3 invoices to one buyer), all made for the same context (ASCII "PF-TEST") so that the
-# tests can show which kinds of proof a context takes together.
+# tests can show which kinds of proof a context takes together. The batch is proved from signed
+# files, and three of those files are proved once more as a proof about their buyer: with that
+# pair the tests show that an invoice presented in one kind is refused in the other.
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="$(mktemp -d)"
@@ -43,7 +45,13 @@ calldata() {
     cp "$WORK/cd_$1/proof_calldata.txt" "$3"
 }
 
-python3 "$ROOT/tools/pf.py" prove --synthetic 10 --context "$CONTEXT" --out "$WORK/batch" >/dev/null
+python3 "$ROOT/tools/efi/synth_files.py" --n 10 --out "$WORK/files" >/dev/null
+PAIRS=""
+for i in 01 02 03 04 05 06 07 08 09 10; do PAIRS="$PAIRS $WORK/files/request_$i.xml $WORK/files/receipt_$i.xml"; done
+YEAR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["year"])' "$WORK/files/summary.json")"
+BUYER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buyer"])' "$WORK/files/summary.json")"
+# shellcheck disable=SC2086
+python3 "$ROOT/tools/pf.py" prove --out "$WORK/batch" --threshold 1.00 --year "$YEAR" --context "$CONTEXT" $PAIRS >/dev/null
 gen pf_batch_k10_verifier "$ROOT/noir/batch_k10/target/batch_k10.json" PfBatchK10Verifier
 calldata pf_batch_k10_verifier "$WORK/batch" "$TESTS/proof_calldata.txt"
 
@@ -54,5 +62,11 @@ calldata pf_agg_top_verifier "$WORK/agg" "$TESTS/agg_proof_calldata.txt"
 python3 "$ROOT/tools/pf.py" prove --synthetic 3 --buyer any --context "$CONTEXT" --out "$WORK/debtor" >/dev/null
 gen pf_debtor_k10_verifier "$ROOT/noir/debtor_k10/target/debtor_k10.json" PfDebtorK10Verifier
 calldata pf_debtor_k10_verifier "$WORK/debtor" "$TESTS/debtor_proof_calldata.txt"
+
+# the first three invoices of the batch again, as a proof about their buyer
+# shellcheck disable=SC2086
+set -- $PAIRS
+python3 "$ROOT/tools/pf.py" prove --buyer "$BUYER" --out "$WORK/again" --threshold 1.00 --year "$YEAR" --context "$CONTEXT" "$1" "$2" "$3" "$4" "$5" "$6" >/dev/null
+calldata pf_debtor_k10_verifier "$WORK/again" "$TESTS/debtor_same_invoices_calldata.txt"
 
 echo "verifiers and fixtures refreshed; now run: (cd starknet/pf_registry && snforge test)"

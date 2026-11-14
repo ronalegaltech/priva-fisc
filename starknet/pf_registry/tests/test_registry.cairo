@@ -1,6 +1,8 @@
 //! Registry tests against real proofs (synthetic invoices): a 10-invoice batch proof, an
 //! aggregate proof of 20 invoices (two leaves of 10) and a proof about 3 invoices issued to one
-//! buyer. Regenerate the fixtures with tools/starknet/refresh_fixture.sh after any circuit change.
+//! buyer. A fourth proof is about the first three invoices of the batch, as invoices issued to
+//! their buyer. Regenerate the fixtures with tools/starknet/refresh_fixture.sh after any circuit
+//! change.
 
 use pf_batch_k10_verifier::honk_verifier::{
     IUltraKeccakZKHonkVerifierDispatcherTrait, IUltraKeccakZKHonkVerifierLibraryDispatcher,
@@ -31,6 +33,10 @@ fn aggregate_proof() -> Span<felt252> {
 
 fn one_buyer_proof() -> Span<felt252> {
     read_txt(@FileTrait::new("tests/debtor_proof_calldata.txt")).span()
+}
+
+fn same_invoices_one_buyer_proof() -> Span<felt252> {
+    read_txt(@FileTrait::new("tests/debtor_same_invoices_calldata.txt")).span()
 }
 
 fn values_of(verifier: ClassHash, proof: Span<felt252>) -> Span<u256> {
@@ -365,4 +371,26 @@ fn test_one_buyer_is_refused_in_a_context_of_aggregates() {
     list_issuer_key(s.registry, *s.one_buyer_values.at(4));
     s.registry.attest_aggregate(aggregate_proof());
     s.registry.attest_one_buyer(one_buyer_proof());
+}
+
+// --- the same invoices in two kinds of proof ---
+// The batch and this proof about a buyer were made from the same signed files and for the same
+// context, so they publish the same nullifiers for those invoices.
+
+#[test]
+#[should_panic(expected: 'invoice already presented')]
+fn test_invoice_shown_in_a_batch_is_refused_in_a_one_buyer_proof() {
+    let s = setup();
+    list_issuer_key(s.registry, *s.batch_values.at(4));
+    s.registry.attest_batch(batch_proof());
+    s.registry.attest_one_buyer(same_invoices_one_buyer_proof());
+}
+
+#[test]
+#[should_panic(expected: 'invoice already presented')]
+fn test_invoice_shown_in_a_one_buyer_proof_is_refused_in_a_batch() {
+    let s = setup();
+    list_issuer_key(s.registry, *s.batch_values.at(4));
+    s.registry.attest_one_buyer(same_invoices_one_buyer_proof());
+    s.registry.attest_batch(batch_proof());
 }

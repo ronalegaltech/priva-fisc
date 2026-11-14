@@ -8,6 +8,8 @@
 # registry -> deploy the registry -> for a 10-invoice batch proof, a proof about 3 invoices issued
 # to one buyer (made for the context of the batch) and a 25-invoice aggregate proof: list the
 # authority key, submit the proof, read back what was recorded, submit it again (must be refused).
+# In between, three invoices of the batch are proved once more as invoices issued to their buyer:
+# a valid proof of another kind, which the registry must refuse because it has seen the invoices.
 # The invoices are invented and signed by throw-away keys.
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -41,13 +43,13 @@ REASON="$(python3 -c 'print(b"invoice already presented".hex())')"
 
 cd "$ROOT/starknet/pf_registry"
 declare_class() { $SN declare --url "$URL" --contract-name "$1" 2>&1 | sed -n 's/^Class Hash: *//p'; }
-echo "1/6 declaring contracts on the local network ..."
+echo "1/7 declaring contracts on the local network ..."
 ECIP="$(declare_class UniversalECIP)"; BATCH_V="$(declare_class PfBatchK10Verifier)"
 AGG_V="$(declare_class PfAggTopVerifier)"; DEBTOR_V="$(declare_class PfDebtorK10Verifier)"
 REGISTRY="$(declare_class PrivaFiscRegistry)"
 [ -n "$ECIP" ] && [ -n "$BATCH_V" ] && [ -n "$AGG_V" ] && [ -n "$DEBTOR_V" ] && [ -n "$REGISTRY" ] || { echo "declare failed"; exit 1; }
 
-echo "2/6 deploying the registry (it is told which circuits aggregate proofs must come from) ..."
+echo "2/7 deploying the registry (it is told which circuits aggregate proofs must come from) ..."
 CIRCUITS=""
 for c in agg_leaf_k10 agg_node agg_sorted_s4096; do
     bb write_vk -b "$ROOT/noir/$c/target/$c.json" -o "$WORK/vk_$c" -t noir-recursive >/dev/null 2>&1
@@ -77,20 +79,47 @@ present() {
     fi
 }
 
-echo "3/6 batch of 10 invented invoices: prove, list the authority key, submit ..."
-python3 "$ROOT/tools/pf.py" prove --synthetic 10 --out "$WORK/batch" >/dev/null
+# refuse FUNCTION CIRCUIT_JSON PROOF_DIR LABEL: a valid proof the registry must turn down, because
+# it is about invoices it has already recorded
+# shellcheck disable=SC2086,SC2046
+refuse() {
+    bb write_vk -b "$2" -o "$WORK/vk_again" -t evm >/dev/null 2>&1
+    mkdir -p "$WORK/cd_again"
+    ( cd "$WORK/cd_again" && "$PF_GARAGA" calldata --system ultra_keccak_zk_honk --proof "$3/proof" --vk "$WORK/vk_again/vk" \
+        --public-inputs "$3/public_inputs" --format starkli >"$WORK/cd_again/calldata.txt" 2>/dev/null )
+    if $SN invoke --url "$URL" --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_again/calldata.txt") 2>&1 | grep -q -e "$REASON" -e "invoice already presented"; then
+        echo "    $4: refused (invoice already presented)"
+    else
+        echo "    $4: NOT refused as expected"; exit 1
+    fi
+}
+
+echo "3/7 batch of 10 invented invoices, from signed files: prove, list the authority key, submit ..."
+python3 "$ROOT/tools/efi/synth_files.py" --n 10 --out "$WORK/files" >/dev/null
+PAIRS=""
+for i in 01 02 03 04 05 06 07 08 09 10; do PAIRS="$PAIRS $WORK/files/request_$i.xml $WORK/files/receipt_$i.xml"; done
+YEAR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["year"])' "$WORK/files/summary.json")"
+BUYER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buyer"])' "$WORK/files/summary.json")"
+CTX="0x$(python3 -c 'import secrets; print(secrets.token_hex(15))')"
+# shellcheck disable=SC2086
+python3 "$ROOT/tools/pf.py" prove --out "$WORK/batch" --threshold 1.00 --year "$YEAR" --context "$CTX" $PAIRS >/dev/null
 present attest_batch "$ROOT/noir/batch_k10/target/batch_k10.json" "$WORK/batch" batch
 
-echo "4/6 3 invented invoices issued to one buyer, in the context of the batch: prove, list the key, submit ..."
-CTX="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["context"])' "$WORK/batch/statement.json")"
+echo "4/7 three of those invoices again, as a proof about their buyer: prove, submit ..."
+# shellcheck disable=SC2086
+set -- $PAIRS
+python3 "$ROOT/tools/pf.py" prove --buyer "$BUYER" --out "$WORK/again" --threshold 1.00 --year "$YEAR" --context "$CTX" "$1" "$2" "$3" "$4" "$5" "$6" >/dev/null
+refuse attest_one_buyer "$ROOT/noir/debtor_k10/target/debtor_k10.json" "$WORK/again" "the same invoices as a proof about their buyer"
+
+echo "5/7 3 other invented invoices issued to one buyer, in the context of the batch: prove, list the key, submit ..."
 python3 "$ROOT/tools/pf.py" prove --synthetic 3 --buyer any --context "$CTX" --out "$WORK/debtor" >/dev/null
 present attest_one_buyer "$ROOT/noir/debtor_k10/target/debtor_k10.json" "$WORK/debtor" "one-buyer proof"
 
-echo "5/6 aggregate of 25 invented invoices: prove three leaves (10, 10 and 5), join them, list the key, submit ..."
+echo "6/7 aggregate of 25 invented invoices: prove three leaves (10, 10 and 5), join them, list the key, submit ..."
 python3 "$ROOT/tools/efi/agg.py" prove --k 10 --n 25 --synthetic --out "$WORK/agg" >/dev/null
 present attest_aggregate "$ROOT/noir/agg_top/target/agg_top.json" "$WORK/agg" aggregate
 
-echo "6/6 what the registry recorded:"
+echo "7/7 what the registry recorded:"
 COUNT="$($SN call --url "$URL" --contract-address "$CONTRACT" --function attestation_count 2>&1 | sed -n 's/^Response: *//p')"
 echo "    attestations: $COUNT"
 [ "$COUNT" = "3_u64" ] && echo "done: three attestations recorded (10 invoices, 3 to one buyer, 25 aggregated), all replays refused" || { echo "unexpected attestation count"; exit 1; }

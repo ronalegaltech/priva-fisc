@@ -2,7 +2,8 @@
 # The flow of devnet_demo.sh on a PUBLIC test network (Starknet Sepolia): deploy the account if
 # needed, declare the ECIP helper, the verifiers and the registry, deploy the registry, list the
 # authority key, submit a 10-invoice batch proof, a proof about 3 invoices issued to one buyer and
-# a 25-invoice aggregate proof, and show that presenting the same invoices again is refused. The invoices are invented and signed by throw-away
+# a 25-invoice aggregate proof, and show that presenting the same invoices again is refused, also
+# when they come back in another kind of proof. The invoices are invented and signed by throw-away
 # keys; nothing from a real taxpayer is used.
 #
 #   . tools/toolchain.env && sh tools/starknet/sepolia_demo.sh
@@ -66,12 +67,12 @@ BAL="$(sncast $FILE --account "$ACCOUNT" get balance $NET 2>&1 | sed -n 's/^Bala
 echo "account $ADDR, balance $(python3 -c "print('%.2f' % (int('${BAL:-0}')/1e18))") STRK"
 [ "${BAL:-0}" != "0" ] || { echo "the account has no test STRK; send some to the address above and run again"; exit 1; }
 
-echo "1/7 account ..."
+echo "1/8 account ..."
 # shellcheck disable=SC2086
 if sncast get class-hash-at "$ADDR" $NET >/dev/null 2>&1; then echo "    already deployed"
 else sncast $FILE --wait account deploy --name "$ACCOUNT" $NET >"$WORK/acc.log" 2>&1 || { cat "$WORK/acc.log"; exit 1; }; echo "    deployed"; fi
 
-echo "2/7 declaring contracts ..."
+echo "2/8 declaring contracts ..."
 # shellcheck disable=SC2086
 declare_class() {
     HASH="$(sncast utils class-hash --contract-name "$1" 2>/dev/null | field 'Class Hash')"
@@ -87,7 +88,7 @@ if [ -z "${PF_SKIP_ONE_BUYER:-}" ]; then DEBTOR_V="$(declare_class PfDebtorK10Ve
 REGISTRY="$(declare_class PrivaFiscRegistry)"
 [ -n "$ECIP" ] && [ -n "$BATCH_V" ] && [ -n "$AGG_V" ] && [ -n "$DEBTOR_V" ] && [ -n "$REGISTRY" ] || exit 1
 
-echo "3/7 registry ..."
+echo "3/8 registry ..."
 CONTRACT=""; [ -f "$STATE" ] && CONTRACT="$(sed -n "s/^$REGISTRY=//p" "$STATE" | head -1)"
 if [ -n "$CONTRACT" ]; then echo "    reusing $CONTRACT"
 else
@@ -123,28 +124,55 @@ present() {
     fi
 }
 
-echo "4/7 batch of 10 invented invoices: prove, list the authority key, submit ..."
-python3 "$ROOT/tools/pf.py" prove --synthetic 10 --out "$WORK/batch" >/dev/null
+# refuse FUNCTION CIRCUIT_JSON PROOF_DIR LABEL: a valid proof the registry must turn down, because
+# it is about invoices it has already recorded
+# shellcheck disable=SC2086,SC2046
+refuse() {
+    bb write_vk -b "$2" -o "$WORK/vk_again" -t evm >/dev/null 2>&1
+    mkdir -p "$WORK/cd_again"
+    ( cd "$WORK/cd_again" && "$PF_GARAGA" calldata --system ultra_keccak_zk_honk --proof "$3/proof" --vk "$WORK/vk_again/vk" \
+        --public-inputs "$3/public_inputs" --format starkli >"$WORK/cd_again/calldata.txt" 2>/dev/null )
+    if $SN invoke $NET --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_again/calldata.txt") 2>&1 | grep -q -e "$REASON" -e "invoice already presented"; then
+        echo "    $4: refused (invoice already presented)"
+    else
+        echo "    $4: NOT refused as expected"; exit 1
+    fi
+}
+
+echo "4/8 batch of 10 invented invoices, from signed files: prove, list the authority key, submit ..."
+python3 "$ROOT/tools/efi/synth_files.py" --n 10 --out "$WORK/files" >/dev/null
+PAIRS=""
+for i in 01 02 03 04 05 06 07 08 09 10; do PAIRS="$PAIRS $WORK/files/request_$i.xml $WORK/files/receipt_$i.xml"; done
+YEAR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["year"])' "$WORK/files/summary.json")"
+BUYER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buyer"])' "$WORK/files/summary.json")"
+CTX="0x$(python3 -c 'import secrets; print(secrets.token_hex(15))')"
+# shellcheck disable=SC2086
+python3 "$ROOT/tools/pf.py" prove --out "$WORK/batch" --threshold 1.00 --year "$YEAR" --context "$CTX" $PAIRS >/dev/null
 present attest_batch "$ROOT/noir/batch_k10/target/batch_k10.json" "$WORK/batch" batch
 
 if [ -z "${PF_SKIP_ONE_BUYER:-}" ]; then
-    echo "5/7 3 invented invoices issued to one buyer, in the context of the batch: prove, list the key, submit ..."
-    CTX="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["context"])' "$WORK/batch/statement.json")"
+    echo "5/8 three of those invoices again, as a proof about their buyer: prove, submit ..."
+    # shellcheck disable=SC2086
+    set -- $PAIRS
+    python3 "$ROOT/tools/pf.py" prove --buyer "$BUYER" --out "$WORK/again" --threshold 1.00 --year "$YEAR" --context "$CTX" "$1" "$2" "$3" "$4" "$5" "$6" >/dev/null
+    refuse attest_one_buyer "$ROOT/noir/debtor_k10/target/debtor_k10.json" "$WORK/again" "the same invoices as a proof about their buyer"
+
+    echo "6/8 3 other invented invoices issued to one buyer, in the context of the batch: prove, list the key, submit ..."
     python3 "$ROOT/tools/pf.py" prove --synthetic 3 --buyer any --context "$CTX" --out "$WORK/debtor" >/dev/null
     present attest_one_buyer "$ROOT/noir/debtor_k10/target/debtor_k10.json" "$WORK/debtor" "one-buyer proof"
 else
-    echo "5/7 proof about one buyer left out (PF_SKIP_ONE_BUYER)"
+    echo "5/8 and 6/8 proofs about one buyer left out (PF_SKIP_ONE_BUYER)"
 fi
 
 if [ -z "${PF_SKIP_AGGREGATE:-}" ]; then
-    echo "6/7 aggregate of 25 invented invoices: prove, list the key, submit ..."
+    echo "7/8 aggregate of 25 invented invoices: prove, list the key, submit ..."
     python3 "$ROOT/tools/efi/agg.py" prove --k 10 --n 25 --synthetic --out "$WORK/agg" >/dev/null
     present attest_aggregate "$ROOT/noir/agg_top/target/agg_top.json" "$WORK/agg" aggregate
 else
-    echo "6/7 aggregate left out (PF_SKIP_AGGREGATE)"
+    echo "7/8 aggregate left out (PF_SKIP_AGGREGATE)"
 fi
 
-echo "7/7 what the registry recorded:"
+echo "8/8 what the registry recorded:"
 # shellcheck disable=SC2086
 COUNT="$($SN call $NET --contract-address "$CONTRACT" --function attestation_count 2>&1 | field 'Response')"
 echo "    registry: $(link contract "$CONTRACT")"

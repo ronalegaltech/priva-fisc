@@ -140,6 +140,13 @@ python3 tools/pf.py verify /tmp/proof --context 0x2a    # valid; warns that the 
 python3 tools/pf.py prove --synthetic 25 --context 0x2b --out /tmp/agg --keep /tmp/record.json    # 25 invoices, one proof
 python3 tools/pf.py verify /tmp/agg --context 0x2b --ledger /tmp/ledger.json    # a second run refuses the repeat
 
+# from signed files: ten invented invoices on disk, three of them as a statement about their buyer
+python3 tools/efi/synth_files.py --n 10 --out /tmp/files
+python3 tools/pf.py prove --buyer TIN:12345678 --threshold 1.00 --year 2026 --context 0x2c --out /tmp/buyer \
+    /tmp/files/request_01.xml /tmp/files/receipt_01.xml /tmp/files/request_02.xml /tmp/files/receipt_02.xml \
+    /tmp/files/request_03.xml /tmp/files/receipt_03.xml
+python3 tools/pf.py verify /tmp/buyer --context 0x2c --buyer TIN:12345678
+
 # spot check: the prover opens invoice 18, the verifier checks it against the proof
 python3 tools/efi/opening.py reveal --record /tmp/record.json --index 17 --out /tmp/opening.json
 python3 tools/efi/opening.py check --opening /tmp/opening.json --proof /tmp/agg --ordinal 18
