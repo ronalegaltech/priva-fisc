@@ -7,6 +7,7 @@
 //   response  authority-signed RegisterInvoiceResponse -> receipt facts
 //   batch     K invoices, each with its receipt, as one statement
 //   debtor    invoices issued to one buyer, as one statement
+//   einvoice  open e-invoices to one buyer, read from an answer in which the authority signs content
 //   agg       leaves of K invoices and a root over them, for more than one circuit can hold
 //   spot      where one opened invoice sits under the root of an aggregated proof
 pub mod format;
@@ -15,5 +16,6 @@ pub mod buyer;
 pub mod response;
 pub mod batch;
 pub mod debtor;
+pub mod einvoice;
 pub mod agg;
 pub mod spot;

@@ -4,7 +4,9 @@
   pf.py prove  --out DIR --threshold EUR --year Y [--context HEX] [--keep FILE]  REQ1.xml RESP1.xml [REQ2.xml RESP2.xml ...]
   pf.py prove  --out DIR --synthetic N [--keep FILE]      (invented invoices, for demos and tests)
   pf.py prove  --buyer TYPE:NUMBER --out DIR --threshold EUR --year Y --context HEX  REQ1.xml RESP1.xml [...]
+  pf.py prove  --einvoices ANSWER.xml --buyer NUIS:NUMBER --out DIR --threshold ALL --context HEX
   pf.py verify DIR [--context HEX] [--ledger FILE] [--taxpayer-cert FILE] [--buyer TYPE:NUMBER]
+                   [--seller TYPE:NUMBER] [--since YYYYMMDD]
   (with --synthetic, --format al writes the invented invoices in the Albanian format)
 
 `prove` runs on the taxpayer's machine. It reads signed request/response files (in ordinal order),
@@ -41,7 +43,8 @@ protection against the same invoices being shown twice.
 Exit status of `verify`: 0 valid, with a production authority key; 1 invalid; 2 valid, but the
 authority key is not listed or is not a production key; 3 the certificate given is not the
 taxpayer key of the proof; 4 the proof was made for another context; 5 a nullifier of this proof
-is already in the ledger; 6 the proof is not about the buyer given.
+is already in the ledger; 6 the proof is not about the buyer given; 7 it is not about the seller
+given; 8 the authority's answer behind it is older than --since allows.
 
 A proof names the taxpayer only by the hash of the signing key. Who that is comes from the
 taxpayer's fiscalization certificate: with --taxpayer-cert (a certificate file, or any signed EFI
@@ -55,6 +58,16 @@ was written against; the Albanian one against the published specification only).
 read from the files themselves. Each format has its own circuits, and `verify` says which format a
 proof is in. For Albanian files only the statement about one buyer (--buyer) is built; the amounts
 are then in lek, and a non-cash invoice, which carries no device code there, counts like any other.
+
+E-invoices as the authority states them (--einvoices). In Albania's e-invoice service the
+taxpayer's software can ask the central system for its e-invoices and gets back a list signed by
+the tax authority, with the amount, the buyer, the seller and the status of each. From one such
+answer `prove --einvoices` shows that up to ten commercial invoices in it were issued to the buyer
+given, have the status ACCEPTED (not refused, not paid), and add up to the threshold. Here the
+amounts stand under the authority's signature, so nothing has to be opened afterwards. The proof
+publishes the day of the answer: `verify --since YYYYMMDD` refuses an older one, `--seller` checks
+who the seller is. It names no taxpayer key. Like the Albanian format as a whole it rests on the
+published specification only (tools/efi/einvoice.py).
 
 Run `. tools/toolchain.env` first.
 """
@@ -75,6 +88,7 @@ import agg  # noqa: E402
 import batch_inputs  # noqa: E402
 import buyer as buyer_reader  # noqa: E402
 import debtor_inputs  # noqa: E402
+import einvoice as ei  # noqa: E402
 import formats  # noqa: E402
 import keyhash  # noqa: E402
 import opening  # noqa: E402
@@ -101,6 +115,16 @@ NOT_PROVED_ONE_BUYER = (
     "that these are all the invoices issued to this buyer, or that no credit note to this buyer "
     "exists: the sum is a lower bound on what was invoiced",
     "that an invoice was paid or corresponds to a real sale",
+)
+NOT_PROVED_EINVOICES = (
+    "that a sale took place: the authority states what is registered and in which status",
+    "that the buyer approved an invoice: ACCEPTED is the status the central system shows, and an "
+    "invoice may reach it without any act of the buyer - read it as not refused and not paid",
+    "anything after the day of the answer: an invoice may have been paid or refused since",
+    "that these are all the e-invoices issued to this buyer",
+    "who presents the proof: nothing in it is signed by the taxpayer, whoever holds the answer can make it",
+    "that an invoice was not also presented in a proof made from its registration messages "
+    "(the nullifiers of the two kinds cannot be compared)",
 )
 DOMAIN_BUYER = int.from_bytes(b"PF-BUYER01", "big")
 BUYER_FORM = re.compile(r"[A-Z]{2,4}:[0-9A-Za-z]{1,20}")
@@ -259,7 +283,56 @@ def decode(values):
     }
 
 
+def prove_einvoices(a):
+    if a.buyer is None or a.threshold is None or a.context is None:
+        sys.exit("--buyer, --threshold and --context (the value the verifier issued) are required with --einvoices")
+    if not ei.PARTY.fullmatch(a.buyer) or (a.seller and not ei.PARTY.fullmatch(a.seller)):
+        sys.exit("with --einvoices a party is written NUIS:K12345678A (the letters NUIS, a colon, the tax number)")
+    buyer, seller = a.buyer.split(":")[1], a.seller.split(":")[1] if a.seller else None
+    try:
+        doc, signature, modulus = ei.ingest(open(a.einvoices, "rb").read())
+        answer = ei.read_answer(bytes(doc))
+    except ValueError as e:
+        sys.exit(f"no proof: {e}")
+    counted, seller = ei.countable(answer, buyer, seller)
+    if not counted:
+        sys.exit("no proof: the answer lists no open commercial invoice to this buyer")
+    if len(counted) > ei.K:
+        sys.exit(f"no proof: the answer lists {len(counted)} open invoices to this buyer and a proof counts at most "
+                 f"{ei.K}; ask the service for a shorter period")
+    context = agg.parse_context(a.context)
+    package = os.path.join(ROOT, "noir", ei.CIRCUIT)
+    run(["nargo", "compile"], cwd=package, what=f"compiling {ei.CIRCUIT}")
+    tag = "Run" + next(tempfile._get_candidate_names())
+    prover_file = os.path.join(package, f"Prover{tag}.toml")
+    witness = os.path.join(package, "target", f"witness{tag}.gz")
+    os.makedirs(a.out, exist_ok=True)
+    try:
+        with open(prover_file, "w") as f:
+            f.write(ei.prover_toml(bytes(doc), signature, modulus, [e["offset"] for e in counted], len(counted),
+                                   ei.party_id(buyer), ei.party_id(seller), round(float(a.threshold) * 100), context))
+        run(["nargo", "execute", "-p", f"Prover{tag}", f"witness{tag}"], cwd=package, what="the statement does not hold for this answer; witness generation")
+        with tempfile.TemporaryDirectory() as tmp:
+            run(["bb", "prove", "-b", os.path.join(package, "target", f"{ei.CIRCUIT}.json"), "-w", witness, "-o", tmp, "-t", "evm", "--write_vk"], what="proving")
+            for name in ("proof", "public_inputs"):
+                shutil.copy(os.path.join(tmp, name), os.path.join(a.out, name))
+    finally:
+        for path in (prover_file, witness):
+            if os.path.exists(path):
+                os.remove(path)
+    with open(os.path.join(a.out, "statement.json"), "w") as f:
+        json.dump(ei.decode(read_values(os.path.join(a.out, "public_inputs"))), f, indent=1)
+    print(f"proof for {len(counted)} open e-invoice(s) to one buyer written to {a.out} (proof, public_inputs, statement.json)")
+    print(f"answer of the authority dated {answer['day']}; seller NUIS:{seller}")
+    print("format: Albania, e-invoice service (the published specification only; no real signed message has been seen)")
+    if a.keep:
+        print("nothing written to --keep: this statement publishes no opening commitments, the amounts are the authority's")
+    return 0
+
+
 def prove(a):
+    if a.einvoices:
+        return prove_einvoices(a)
     if a.buyer:
         return prove_one_buyer(a)
     if a.synthetic:
@@ -331,6 +404,9 @@ def verify(a):
     # not leave "PROOF VALID" on the screen.
     expected_context = agg.parse_context(a.context) if a.context else None
     expected_buyer = parse_buyer(a.buyer) if a.buyer else None
+    expected_seller = parse_buyer(a.seller) if a.seller else None
+    if a.since is not None and not re.fullmatch(r"\d{8}", a.since):
+        sys.exit("--since is a day written YYYYMMDD")
     cert = None
     if a.taxpayer_cert:
         cert = keyhash.describe(keyhash.load_cert(a.taxpayer_cert, a.taxpayer_cert.lower().endswith(".xml")))
@@ -340,10 +416,25 @@ def verify(a):
             ledger = json.load(f)
 
     values = read_values(os.path.join(a.dir, "public_inputs"))
-    one_buyer = agg.one_buyer_slots(values)
-    kind = None if one_buyer else agg.kind_of(values)
+    stated = len(values) == ei.PUBLIC_VALUES   # e-invoices as the authority states them
+    one_buyer = None if stated else agg.one_buyer_slots(values)
+    kind = None if (one_buyer or stated) else agg.kind_of(values)
     fmt = formats.MONTENEGRO
-    if one_buyer:
+    if stated:
+        try:
+            st = ei.decode(values)
+        except ValueError:
+            print("PROOF INVALID")
+            return 1
+        if not agg.verify_one_buyer(a.dir, ei.K, ei.CIRCUIT):
+            print("PROOF INVALID")
+            return 1
+        fmt = formats.ALBANIA
+        k = st["invoice_count"]
+        circuit_line = f"{st['circuit']} (verification key derived locally)"
+        nullifiers = st["nullifiers"]
+        published = f"{k} nullifier(s), a tag of the buyer, a tag of the seller, the day of the answer"
+    elif one_buyer:
         fmt = agg.one_buyer_format(a.dir, one_buyer)
         if fmt is None:
             print("PROOF INVALID")
@@ -378,7 +469,13 @@ def verify(a):
     print("PROOF VALID")
     print(f"  circuit                : {circuit_line}")
     print(f"  format of the invoices : {fmt.country}" + ("" if fmt is formats.MONTENEGRO else f" - written against {fmt.basis}"))
-    if one_buyer:
+    if stated:
+        day = st["answer_day"]
+        print(f"  what is proved         : in its signed answer of {day // 10000}-{day // 100 % 100:02d}-{day % 100:02d} the authority lists {k} e-invoice(s)")
+        print("                           issued by one seller to one buyer, each a commercial invoice with the")
+        print("                           status ACCEPTED (not refused, not paid) and no negative amount;")
+        print(f"                           sum of amounts >= {st['threshold_cents'] // 100}.{st['threshold_cents'] % 100:02d} {fmt.currency}")
+    elif one_buyer:
         print(f"  what is proved         : {k} invoice(s) issued to one buyer in {st['year']}, each signed by the")
         print("                           taxpayer key and each with an authority receipt for the same request;")
         print("                           none with a negative total; no receipt used twice;")
@@ -389,7 +486,8 @@ def verify(a):
         print("                           an authority receipt for the same request; no receipt used twice;")
         print(f"                           sum of totals >= {st['threshold_cents'] // 100}.{st['threshold_cents'] % 100:02d} EUR")
         print(f"  starts at ordinal 1    : {'yes' if st['starts_at_ordinal_one'] else 'no'}")
-    print(f"  taxpayer key hash      : {st['taxpayer_key_hash']}")
+    if not stated:
+        print(f"  taxpayer key hash      : {st['taxpayer_key_hash']}")
     print(f"  authority key hash     : {st['issuer_key_hash']}")
     production = bool(issuer) and issuer.get("environment") == "production"
     if production:
@@ -407,15 +505,36 @@ def verify(a):
     else:
         print(f"  context                : {st['context']} - NOT the expected one: this proof was made for another verifier")
     buyer_ok = True
-    if one_buyer and expected_buyer is None:
+    if (one_buyer or stated) and expected_buyer is None:
         print(f"  buyer                  : tag {st['buyer_tag']} (not compared: no --buyer given)")
-    elif one_buyer:
+    elif one_buyer or stated:
         buyer_ok = poseidon2.hash([DOMAIN_BUYER, int(st["context"], 16), expected_buyer]) == int(st["buyer_tag"], 16)
         print(f"  buyer                  : {a.buyer} (the one expected)" if buyer_ok else
               "  buyer                  : NOT the expected one: these invoices were issued to somebody else")
     elif expected_buyer is not None:
         buyer_ok = False
         print("  buyer                  : this kind of proof says nothing about buyers")
+    seller_ok, fresh = True, True
+    if stated:
+        if expected_seller is None:
+            print(f"  seller                 : tag {st['seller_tag']} (not compared: no --seller given)")
+        else:
+            seller_ok = poseidon2.hash([ei.DOMAIN_SELLER, int(st["context"], 16), expected_seller]) == int(st["seller_tag"], 16)
+            print(f"  seller                 : {a.seller} (the one expected)" if seller_ok else
+                  "  seller                 : NOT the expected one: these invoices were issued by somebody else")
+        if a.since is None:
+            print(f"  day of the answer      : {st['answer_day']} (not compared: no --since given)")
+        else:
+            fresh = st["answer_day"] >= int(a.since)
+            print(f"  day of the answer      : {st['answer_day']} (not older than {a.since})" if fresh else
+                  f"  day of the answer      : {st['answer_day']} - OLDER than {a.since}: invoices may have been paid or refused since")
+    else:
+        if expected_seller is not None:
+            seller_ok = False
+            print("  seller                 : this kind of proof names the seller by its key, see --taxpayer-cert")
+        if a.since is not None:
+            fresh = False
+            print("  day of the answer      : this kind of proof is not made from an answer of the authority")
     print(f"  published              : {published}")
     seen = set(ledger.get(st["context"], []))
     repeated = [n for n in nullifiers if n in seen]
@@ -428,7 +547,10 @@ def verify(a):
     else:
         print("  presented before       : no (compared with the ledger)")
     cert_ok = True
-    if cert:
+    if cert and stated:
+        cert_ok = False
+        print("  taxpayer               : this kind of proof names no taxpayer key, see --seller")
+    elif cert:
         cert_ok = int(cert["key_hash"], 16) == int(st["taxpayer_key_hash"], 16)
         if cert_ok:
             print(f"  taxpayer               : key matches the certificate of {cert['subject']}")
@@ -436,12 +558,16 @@ def verify(a):
         else:
             print("  taxpayer               : the key in this certificate is NOT the key of the proof")
     print("  NOT proved:")
-    for line in NOT_PROVED_ONE_BUYER if one_buyer else NOT_PROVED:
+    for line in NOT_PROVED_EINVOICES if stated else NOT_PROVED_ONE_BUYER if one_buyer else NOT_PROVED:
         print(f"    - {line}")
     if not context_ok:
         return 4
     if not buyer_ok:
         return 6
+    if not seller_ok:
+        return 7
+    if not fresh:
+        return 8
     if repeated:
         return 5
     if not cert_ok:
@@ -467,6 +593,8 @@ def main():
                    help="with --synthetic: the country format of the invented invoices (default me)")
     p.add_argument("--keep", metavar="FILE", help="write the spot-check record (private) to FILE")
     p.add_argument("--buyer", metavar="TYPE:NUMBER", help="prove that the invoices were all issued to this buyer, e.g. TIN:02345678")
+    p.add_argument("--einvoices", metavar="ANSWER.xml", help="a signed answer of the Albanian e-invoice service listing e-invoices")
+    p.add_argument("--seller", metavar="NUIS:NUMBER", help="with --einvoices: count only e-invoices of this seller")
     p.add_argument("files", nargs="*")
     v = sub.add_parser("verify")
     v.add_argument("dir")
@@ -474,6 +602,8 @@ def main():
     v.add_argument("--ledger", metavar="FILE", help="remember accepted nullifiers here and refuse a repeat")
     v.add_argument("--taxpayer-cert", help="taxpayer certificate (DER/PEM), or a signed EFI request (.xml)")
     v.add_argument("--buyer", metavar="TYPE:NUMBER", help="the buyer this proof must be about; another one is refused")
+    v.add_argument("--seller", metavar="TYPE:NUMBER", help="the seller a proof about e-invoices must be about")
+    v.add_argument("--since", metavar="YYYYMMDD", help="refuse a proof about e-invoices whose answer the authority dated before this day")
     a = ap.parse_args()
     try:
         return prove(a) if a.cmd == "prove" else verify(a)

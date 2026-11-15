@@ -5,11 +5,12 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | Package | Kind | What it does |
 |---|---|---|
 | `pf_xmldsig` | library | Enveloped XML-DSig with exclusive C14N, SHA-256 and RSA-2048 PKCS#1 v1.5: rebuilds the canonical `SignedInfo` from a fixed template around the document digest, checks the signature, hashes the signer key. The first 512 bytes of `SignedInfo` never change, so their SHA-256 state is a constant and only the last three blocks are hashed in the circuit. Parsers for UUIDs, timestamps, amounts and registration codes that constrain every character. |
-| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `buyer.nr` reads the buyer named in it; `response.nr` rebuilds the authority-signed `RegisterInvoiceResponse` (318 bytes in the Montenegrin format); `format.nr` holds what differs from one country to another (fixed text, and whether every invoice names a device); `batch.nr` is the statement over K invoices; `debtor.nr` is the statement over invoices issued to one buyer; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
+| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `buyer.nr` reads the buyer named in it; `response.nr` rebuilds the authority-signed `RegisterInvoiceResponse` (318 bytes in the Montenegrin format); `format.nr` holds what differs from one country to another (fixed text, and whether every invoice names a device); `einvoice.nr` reads an answer of the Albanian e-invoice service that lists e-invoices with their amounts and status; `batch.nr` is the statement over K invoices; `debtor.nr` is the statement over invoices issued to one buyer; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
 | `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (375,992 and 3,664,134 gates; about 4 s and 33 s with `pf.py prove --buyer`). |
 | `debtor_al_k1`, `debtor_al_k10` | circuit | The same statement for invoices in the Albanian format (see below). An invoice without a device code has device 0 in its opening commitment (380,004 and 3,702,745 gates). |
+| `einvoice_al_k10` | circuit | Up to 10 open e-invoices of one seller to one buyer, read from ONE answer of Albania's e-invoice service in which the authority signs amount, parties and status of every e-invoice: number of e-invoices, buyer tag, seller tag, day of the answer, total at least a threshold (945,269 gates; about 10 s with `pf.py prove --einvoices`). Statement and limits in `pf_efi/src/einvoice.nr`. |
 | `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices (the 10-slot leaf may hold fewer), publishes a blinded commitment to the run. |
 | `agg_node` | circuit | Joins two adjacent runs, each proved by a leaf or by another node. |
 | `agg_sorted_s4096` | circuit | Up to 4,096 receipt codes sorted strictly increasing. |
@@ -59,6 +60,20 @@ administration's test environment. `ALBANIA` was written against the published s
 specification's example, with the prefix `ns2`. In the Albanian format the device code is optional,
 because a non-cash invoice carries none: it may occur once or not at all, and an invoice without
 one has device 0. Only the statement about one buyer has circuits for this format.
+
+## An answer in which the authority signs content
+
+`einvoice.nr` reads another kind of document: the authority's signed answer to "get my
+e-invoices" in Albania's e-invoice service. Each e-invoice is one element whose attributes carry
+its code, type, amount, the two tax numbers and its status. The answer must begin with the
+format's text, which names the message; the header's start tag is scanned for the day of the
+answer. The prover says where each counted `<Einvoice ` element starts: canonical XML leaves no raw
+`<` in text or inside an attribute value, so those bytes can only be the start of such an element.
+Its start tag is scanned once, like `<Invoice>` in a request, each wanted attribute exactly once.
+One signature and one hash cover all the e-invoices of the answer, which is why ten invoices
+cost a quarter of what ten signed pairs cost. The amounts are the authority's statement, so this
+statement publishes no opening commitments. Its nullifier comes from the e-invoice code, not from
+the receipt code of the registration, and the two cannot be compared.
 
 ## What is derived from what
 

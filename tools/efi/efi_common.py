@@ -119,16 +119,17 @@ def canonical_without_signature(element) -> bytes:
     return etree.tostring(body, method="c14n", exclusive=True)
 
 
-def ingest_signed(xml: bytes, localname: str, uri: bytes):
+def ingest_signed(xml: bytes, localname: str, uri: bytes, namespaces=None):
     """Signed EFI message (bare or in a SOAP envelope) -> (canonical doc, signature int, modulus int).
+    The element is looked for in the namespaces of the formats this tool reads, or in `namespaces`.
 
     Raises if the element is missing or unsigned, the signer key is not RSA-2048/e=65537, the
     canonical SignedInfo does not match the fixed template, or the signature does not verify.
     """
     root = etree.fromstring(xml, etree.XMLParser(remove_blank_text=True, resolve_entities=False, no_network=True))
     el = None
-    for f in formats.ALL:
-        tag = "{" + f.namespace + "}" + localname
+    for namespace in (namespaces or [f.namespace for f in formats.ALL]):
+        tag = "{" + namespace + "}" + localname
         el = root if root.tag == tag else root.find(".//" + tag)
         if el is not None:
             break

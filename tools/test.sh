@@ -44,6 +44,7 @@ step "buyer named in a request"    python3 tools/efi/test_buyer.py
 step "1 invoice"                   python3 tools/efi/test_batch.py --k 1
 step "1 invoice to one buyer"      python3 tools/efi/test_debtor.py
 step "the same, Albanian format"   python3 tools/efi/test_debtor.py --format al
+step "e-invoices in a signed answer" python3 tools/efi/test_einvoice.py
 step "invoice signed again"        python3 tools/efi/test_replay.py
 step "spot check and comparison"   python3 tools/efi/test_opening.py
 step "command line on files"       python3 tools/test_cli.py

@@ -57,6 +57,29 @@ pub global ALBANIA: Format<142, 376> = Format {
     device_required: false,
 };
 
+/// The answer of an e-invoice service to "get my e-invoices" (einvoice.nr): another message of
+/// another service, with its own fixed text.
+pub struct EinvoiceFormat<let H: u32, let O: u32, let T: u32> {
+    /// The canonical answer from its first byte up to the name of its Header element; the next
+    /// byte is the space that begins the header's attributes.
+    pub head: [u8; H],
+    /// How an e-invoice element begins, with the space after its name.
+    pub open: [u8; O],
+    /// How the canonical answer ends.
+    pub tail: [u8; T],
+}
+
+// Written against "Einvoice Service, Technical Specification", version 04, only. The name of the
+// root element is the one the specification's tables give the request (GetEinvoices...); its
+// example of the response carries another message's name by mistake. The list elements are
+// written without a prefix, as in that example.
+pub global ALBANIA_EINVOICES: EinvoiceFormat<129, 10, 39> = EinvoiceFormat {
+    head: "<ns2:GetEinvoicesResponse xmlns:ns2=\"https://Einvoice.tatime.gov.al/EinvoiceService/schema\" Id=\"Response\" Version=\"1\"><ns2:Header"
+        .as_bytes(),
+    open: "<Einvoice ".as_bytes(),
+    tail: "</Einvoices></ns2:GetEinvoicesResponse>".as_bytes(),
+};
+
 // The placeholders in a response template, as written above.
 global ZERO_UUID: [u8; 36] = "00000000-0000-0000-0000-000000000000".as_bytes();
 global ZERO_TIME: [u8; 25] = "0000-00-00T00:00:00+00:00".as_bytes();

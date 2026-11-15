@@ -190,6 +190,46 @@ def main():
         code, out = tool("compare", "--opening", al_shown, "--authority", al_lookup)
         report("Albanian files: a record that names a device differs", code == 1 and out.strip() == "DIFFERENT: device", out[-200:])
 
+        # E-invoices as the authority states them: one signed answer of the Albanian e-invoice service.
+        answer = os.path.join(d, "answer.xml")
+        r = subprocess.run([sys.executable, os.path.join(HERE, "efi", "einvoice.py"), "synth", "--out", answer, "--n", "2", "--others", "5"],
+                           capture_output=True, text=True)
+        s_ei = json.load(open(answer + ".json")) if r.returncode == 0 else {}
+        ei_buyer, ei_seller, ei_total = s_ei.get("buyer", "NUIS:K00000000A"), s_ei.get("seller", "NUIS:K00000000A"), s_ei.get("total", "0")
+        ei_proof, ei_ledger = os.path.join(d, "ei_proof"), os.path.join(d, "ei_ledger.json")
+        code, out = pf("prove", "--einvoices", answer, "--buyer", ei_buyer, "--threshold", ei_total, "--context", "0x66", "--out", ei_proof)
+        report("e-invoices: a proof from one signed answer at exactly their total", r.returncode == 0 and code == 0, (r.stderr + out)[-300:])
+        code, out = pf("verify", ei_proof, "--context", "0x66", "--buyer", ei_buyer, "--seller", ei_seller, "--since", "20261101")
+        report("e-invoices: valid for the buyer, the seller and the day expected (exit 2)",
+               code == 2 and "PROOF VALID" in out and "einvoice_al_k10" in out and " ALL" in out and "(not older than 20261101)" in out
+               and out.count("(the one expected)") == 3, out[-500:])
+        code, out = pf("verify", ei_proof, "--context", "0x66", "--buyer", "NUIS:K99999999Z")
+        report("e-invoices: another buyer expected (exit 6)", code == 6 and "issued to somebody else" in out, out[-300:])
+        code, out = pf("verify", ei_proof, "--context", "0x66", "--seller", "NUIS:K99999999Z")
+        report("e-invoices: another seller expected (exit 7)", code == 7 and "issued by somebody else" in out, out[-300:])
+        code, out = pf("verify", ei_proof, "--context", "0x66", "--since", "20270101")
+        report("e-invoices: an answer older than the verifier allows (exit 8)", code == 8 and "OLDER than 20270101" in out, out[-300:])
+        code, out = pf("verify", ei_proof, "--context", "0x66", "--taxpayer-cert", request)
+        report("e-invoices: the proof names no taxpayer key (exit 3)", code == 3 and "names no taxpayer key" in out, out[-300:])
+        code, out = pf("verify", ei_proof, "--context", "0x66", "--ledger", ei_ledger)
+        report("e-invoices: first presentation with a ledger", code == 2 and "presented before       : no" in out, out[-300:])
+        code, out = pf("verify", ei_proof, "--context", "0x66", "--ledger", ei_ledger)
+        report("e-invoices: the same e-invoices again (exit 5)", code == 5 and "presented before       : YES" in out, out[-300:])
+        code, out = pf("prove", "--einvoices", answer, "--buyer", "NUIS:K99999999Z", "--threshold", "1", "--context", "0x66",
+                       "--out", os.path.join(d, "ei_none"))
+        report("e-invoices: no open invoice to the buyer named, no proof",
+               code != 0 and "no open commercial invoice" in out and not os.path.exists(os.path.join(d, "ei_none", "proof")), out[-300:])
+        code, out = pf("prove", "--einvoices", answer, "--buyer", ei_buyer, "--threshold", str(float(ei_total) + 1), "--context", "0x66",
+                       "--out", os.path.join(d, "ei_above"))
+        report("e-invoices: threshold above their total is refused",
+               code != 0 and not os.path.exists(os.path.join(d, "ei_above", "proof")), out[-300:])
+        code, out = pf("verify", to_buyer, "--context", "0x33", "--seller", "TIN:12345678")
+        report("a proof from registration messages names the seller by its key (exit 7)",
+               code == 7 and "names the seller by its key" in out, out[-300:])
+        code, out = pf("verify", to_buyer, "--context", "0x33", "--since", "20260101")
+        report("a proof from registration messages has no day of an answer (exit 8)",
+               code == 8 and "not made from an answer of the authority" in out, out[-300:])
+
         # A directory with no proof in it, named after the words a careless check would look for.
         trap = os.path.join(d, "Proof verified successfully")
         os.makedirs(trap)
