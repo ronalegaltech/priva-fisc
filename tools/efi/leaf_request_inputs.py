@@ -23,17 +23,20 @@ import uuid
 
 from lxml import etree
 
-from efi_common import NS, canonical_without_signature, ingest_signed, modulus_of, new_key, sign, \
+import formats
+from efi_common import canonical_without_signature, ingest_signed, modulus_of, new_key, sign, \
     signature_element, signed_info, toml_bytes, toml_signature_block
+from formats import MONTENEGRO
 
-EFI = "{https://efi.tax.gov.me/fs/schema}"
-MAX_DOC = 4096       # must match noir/leaf_request_v0/src/main.nr (TAG_* match noir/pf_efi/src/request.nr)
-TAG_START = 200
+EFI = "{" + MONTENEGRO.namespace + "}"   # the Montenegrin element namespace, for the tools that edit such requests
+MAX_DOC = 4096       # must match noir/leaf_request_v0/src/main.nr (TAG_WINDOW matches noir/pf_efi/src/request.nr)
+TAG_START = MONTENEGRO.tag_start   # leaf_request_v0 is a Montenegrin circuit
 TAG_WINDOW = 1280
-HEADER_RE = re.compile(
-    rb'<RegisterInvoiceRequest xmlns="https://efi\.tax\.gov\.me/fs/schema" Id="Request" Version="1">'
-    rb'<Header SendDateTime="[^"]{25}" UUID="[^"]{36}"></Header><Invoice '
-)
+# Invented parties, by format: seller name, buyer name, town, address.
+PARTIES = {
+    "me": ("Sintetički prodavac d.o.o.", "Sintetički kupac d.o.o.", "Budva", "Ulica bb"),
+    "al": ("Shitës sintetik sh.p.k.", "Blerës sintetik sh.p.k.", "Tirana", "Rruga pa numër"),
+}
 
 
 def write_prover(path, doc: bytes, signature: int, modulus: int, salt: int, doc_len=None):
@@ -47,11 +50,17 @@ def write_prover(path, doc: bytes, signature: int, modulus: int, salt: int, doc_
 
 
 def precheck(doc: bytes):
-    """Readable errors for the v0 liveness limits (the circuit enforces all of this itself)."""
-    if not HEADER_RE.match(doc):
+    """Readable errors for the v0 liveness limits (the circuit enforces all of this itself).
+    Returns the format the request is written in."""
+    try:
+        fmt = formats.of_request(doc)
+    except formats.UnknownFormat:
+        fmt = None
+    if fmt is None or not fmt.header_re.match(doc):
         raise ValueError("header does not match the v0 template (SubseqDelivType or 'Z' time zone?)")
-    if b">" not in re.sub(rb'"[^"]*"', b'""', doc[TAG_START:TAG_START + TAG_WINDOW]):
+    if b">" not in re.sub(rb'"[^"]*"', b'""', doc[fmt.tag_start:fmt.tag_start + TAG_WINDOW]):
         raise ValueError("<Invoice> start tag is longer than the v0 scan window")
+    return fmt
 
 
 def ingest_xml(xml: bytes):
@@ -67,7 +76,15 @@ def reg_code(rng):
                    + [rng.choice(a), rng.choice(a)] + [str(rng.randrange(10)) for _ in range(3)])
 
 
-def core_fields(rng):
+def party_number(rng, fmt=MONTENEGRO):
+    """An invented identifier of the kind domestic companies carry in this format."""
+    digits = "".join(str(rng.randrange(10)) for _ in range(8))
+    if fmt.party_id_type == "NUIS":
+        return rng.choice("JKLM") + digits + rng.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    return digits
+
+
+def core_fields(rng, fmt=MONTENEGRO):
     year = 2026
     issue = datetime.datetime(year, rng.randrange(1, 13), rng.randrange(1, 28), rng.randrange(8, 20),
                               rng.randrange(60), rng.randrange(60)).isoformat() + "+01:00"
@@ -77,7 +94,7 @@ def core_fields(rng):
         "uuid": str(uuid.UUID(int=rng.getrandbits(128), version=4)),
         "bu": reg_code(rng), "tcr": reg_code(rng), "soft": reg_code(rng), "oper": reg_code(rng),
         "ordinal": rng.randrange(1, 5000), "issue": issue, "year": year,
-        "tin": "".join(str(rng.randrange(10)) for _ in range(8)),
+        "tin": party_number(rng, fmt),
         "net": net, "vat": vat, "total": net + vat,
     }
 
@@ -86,13 +103,18 @@ def money(cents: int) -> str:
     return f"{cents // 100}.{cents % 100:02d}"
 
 
-def build_request(key, c, tricky: bool):
-    """Unsigned request element, written in a NON-canonical attribute order on purpose."""
-    ikof_input = "|".join([c["tin"], c["issue"], str(c["ordinal"]), c["bu"], c["tcr"], c["soft"], money(c["total"])])
+def build_request(key, c, tricky: bool, fmt=MONTENEGRO):
+    """Unsigned request element, written in a NON-canonical attribute order on purpose.
+    c["no_device"]: an invoice without a device code, numbered the way the Albanian specification
+    numbers non-cash invoices."""
+    EFI = "{" + fmt.namespace + "}"
+    seller_name, default_buyer_name, town, address = PARTIES[fmt.name]
+    device = "" if c.get("no_device") else c["tcr"]
+    ikof_input = "|".join([c["tin"], c["issue"], str(c["ordinal"]), c["bu"], device, c["soft"], money(c["total"])])
     iic_signature = sign(key, ikof_input.encode())
     iic = hashlib.md5(iic_signature).hexdigest().upper()
 
-    req = etree.Element(EFI + "RegisterInvoiceRequest", nsmap={None: NS["e"]}, Id="Request", Version="1")
+    req = etree.Element(EFI + "RegisterInvoiceRequest", nsmap={None: fmt.namespace}, Id="Request", Version=fmt.version)
     etree.SubElement(req, EFI + "Header", UUID=c["uuid"], SendDateTime=c["issue"])
     inv = etree.SubElement(req, EFI + "Invoice")
     attrs = {
@@ -107,13 +129,16 @@ def build_request(key, c, tricky: bool):
         # Free text that looks like attributes and markup. Canonical XML escapes the quotes.
         attrs["Note"] = 'x > y " TotPrice="0.01" InvOrdNum="1" IIC="' + "0" * 32 + '" /><Invoice TotPrice="0.02"'
         attrs["PayDeadline"] = "2026-12-31"
+    if c.get("no_device"):
+        del attrs["TCRCode"]
+        attrs["InvNum"] = f'{c["ordinal"]}/{c["year"]}'
     for k, v in attrs.items():
         inv.set(k, v)
     pm = etree.SubElement(inv, EFI + "PayMethods")
     etree.SubElement(pm, EFI + "PayMethod", Type="ACCOUNT", Amt=money(c["total"]))
-    etree.SubElement(inv, EFI + "Seller", IDType="TIN", IDNum=c["tin"], Name="Sintetički prodavac d.o.o.",
-                     Address="Ulica bb", Town="Budva", Country="MNE")
-    buyer_name = 'Kupac "A&B" > d.o.o.' if tricky else "Sintetički kupac d.o.o."
+    etree.SubElement(inv, EFI + "Seller", IDType=fmt.party_id_type, IDNum=c["tin"], Name=seller_name,
+                     Address=address, Town=town, Country=fmt.country_code)
+    buyer_name = 'Kupac "A&B" > d.o.o.' if tricky else default_buyer_name
     # c["buyer"]: {"type", "num"} to name another buyer, None for an invoice without one (retail sale).
     buyer = c.get("buyer", {"type": "TIN", "num": "12345678"})
     if buyer is not None:

@@ -5,6 +5,7 @@
 // as agg_leaf_k1.
 
 use pf_efi::agg::leaf_run_in_clear;
+use pf_efi::format::MONTENEGRO;
 
 global K: u32 = 1;
 global M: u32 = 2048;
@@ -29,6 +30,7 @@ fn main(
     gamma: Field,
 ) -> pub ([Field; 12], [Field; K]) {
     leaf_run_in_clear(
+        MONTENEGRO,
         request_docs,
         request_lens,
         request_sigs,

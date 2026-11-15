@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Invented invoices for the debtor circuits (noir/debtor_k1, noir/debtor_k10): invoices one seller
-issued to one buyer, scattered among its other invoices.
+"""Invented invoices for the debtor circuits (noir/debtor_k1, noir/debtor_k10, and noir/debtor_al_k1,
+noir/debtor_al_k10 for the Albanian format): invoices one seller issued to one buyer, scattered
+among its other invoices.
 
-  synthetic(k, tamper=None, count=None) -> everything a Prover file needs, plus what a verifier
-  should see come out.
+  synthetic(k, tamper=None, count=None, fmt=MONTENEGRO) -> everything a Prover file needs, plus
+  what a verifier should see come out.
+
+In a format where the device code is optional, every second invoice is written without one.
 
 Repo-safe: throw-away keys, invented identifiers.
 """
@@ -13,8 +16,10 @@ import uuid
 
 import batch_inputs
 import buyer as buyer_reader
+import formats
 from efi_common import modulus_of, new_key
-from leaf_request_inputs import build_request, core_fields, ingest_xml as ingest_request, signed_xml
+from formats import MONTENEGRO
+from leaf_request_inputs import build_request, core_fields, ingest_xml as ingest_request, party_number, signed_xml
 from leaf_response_inputs import ingest_xml as ingest_response, synthetic_soap
 
 # Negative cases. Every one must be refused by the circuit. The altered invoice is the last one
@@ -35,22 +40,36 @@ TAMPERS = (
     "count-zero",       # a statement about no invoices
     "count-too-large",  # more invoices than the circuit has slots
 )
+# Refused only where the format makes the device code mandatory.
+TAMPERS_DEVICE_REQUIRED = (
+    "no-device",        # one invoice carries no device code
+)
+# Refused whatever the format.
+TAMPERS_ANY_FORMAT = (
+    "other-format",     # one request is written in another country's format
+    "other-format-receipt",  # one receipt is written in another country's format
+)
 NEEDS_TWO = {"reused-receipt"}
 
 
-def number(rng):
-    return "".join(str(rng.randrange(10)) for _ in range(8))
+def tampers(fmt=MONTENEGRO):
+    return TAMPERS + (TAMPERS_DEVICE_REQUIRED if fmt.device_required else ()) + TAMPERS_ANY_FORMAT
 
 
-def synthetic(k, tamper=None, count=None):
+def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO):
     """k signed pairs of which the first `count` (default: all) are invoices to one buyer. Slots
     after `count` hold invoices to other buyers, one of them a credit note: a prover's filler,
     which must not matter. Returns a dict."""
     rng = random.Random(secrets.randbits(64))
     taxpayer, authority = new_key(), new_key()
-    base = core_fields(rng)
+    base = core_fields(rng, fmt)
     count = k if count is None else count
-    buyer = {"type": "TIN", "num": number(rng)}
+    other = next(f for f in formats.ALL if f is not fmt)
+
+    def number(rng):
+        return party_number(rng, fmt)
+
+    buyer = {"type": fmt.party_id_type, "num": number(rng)}
     last = count - 1
     invoices, total, ordinal = [], 0, base["ordinal"]
 
@@ -61,6 +80,7 @@ def synthetic(k, tamper=None, count=None):
         c["ordinal"] = ordinal
         c["net"] = rng.randrange(1000, 300000)
         c["buyer"] = dict(buyer)
+        c["no_device"] = (not fmt.device_required) and n % 2 == 0
         if n >= count:
             c["buyer"]["num"] = number(rng)
             if n == k - 1:
@@ -74,13 +94,16 @@ def synthetic(k, tamper=None, count=None):
                 c["buyer"] = None
             if tamper == "credit-note":
                 c["net"] = -100000
+            if tamper == "no-device":
+                c["no_device"] = True
         c["vat"] = c["net"] * 21 // 100
         c["total"] = c["net"] + c["vat"]
         if n < count:
             total += c["total"]
 
         req_key = new_key() if (tamper == "forged-request" and n == last) else taxpayer
-        doc, req_sig, _ = ingest_request(signed_xml(req_key, build_request(req_key, c, tricky=False)))
+        req_fmt = other if (tamper == "other-format" and n == last) else fmt
+        doc, req_sig, _ = ingest_request(signed_xml(req_key, build_request(req_key, c, tricky=False, fmt=req_fmt)))
 
         resp_fields = (c["uuid"].encode(), c["issue"].encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
         if tamper == "old-receipt" and n == last:
@@ -88,7 +111,8 @@ def synthetic(k, tamper=None, count=None):
         if tamper == "broken-link" and n == last:
             resp_fields = (str(uuid.uuid4()).encode(),) + resp_fields[1:]
         resp_key = new_key() if (tamper == "forged-receipt" and n == last) else authority
-        fields, resp_sig, _ = ingest_response(synthetic_soap(resp_key, resp_fields))
+        resp_fmt = other if (tamper == "other-format-receipt" and n == last) else fmt
+        fields, resp_sig, _ = ingest_response(synthetic_soap(resp_key, resp_fields, resp_fmt))
         invoices.append({"doc": doc, "req_sig": req_sig, "resp": fields, "resp_sig": resp_sig,
                          "salt": secrets.randbits(248), "cents": c["total"]})
 
@@ -99,12 +123,12 @@ def synthetic(k, tamper=None, count=None):
         c["ordinal"] = ordinal + 1
         c["net"], c["vat"], c["total"] = 100000, 21000, 121000
         c["buyer"] = dict(buyer)
-        doc, req_sig, _ = ingest_request(signed_xml(taxpayer, build_request(taxpayer, c, tricky=False)))
+        doc, req_sig, _ = ingest_request(signed_xml(taxpayer, build_request(taxpayer, c, tricky=False, fmt=fmt)))
         invoices[last] = dict(invoices[0], doc=doc, req_sig=req_sig, salt=secrets.randbits(248), cents=121000)
 
     claimed = buyer_reader.pack(buyer["type"], buyer["num"])
     if tamper == "wrong-buyer-claimed":
-        claimed = buyer_reader.pack("TIN", number(rng))
+        claimed = buyer_reader.pack(fmt.party_id_type, number(rng))
     if tamper == "count-zero":
         count = 0
     if tamper == "count-too-large":
@@ -119,6 +143,7 @@ def synthetic(k, tamper=None, count=None):
         "context": secrets.randbits(120),
         "year": base["year"] + (1 if tamper == "wrong-year" else 0),
         "total": total,
+        "format": fmt,
     }
 
 

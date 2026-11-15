@@ -90,7 +90,8 @@ def main():
         code, out = pf("prove", "--buyer", "TIN:12345678", "--out", to_buyer, "--threshold", total, "--keep", record, *common)
         report("one buyer: proof from the signed files", code == 0 and os.path.exists(os.path.join(to_buyer, "proof")), out[-200:])
         code, out = pf("verify", to_buyer, "--context", "0x33", "--buyer", "TIN:12345678")
-        report("one buyer: valid for the buyer expected (exit 2)", code == 2 and "PROOF VALID" in out and "(the one expected)" in out, out[-300:])
+        report("one buyer: valid for the buyer expected (exit 2)", code == 2 and "PROOF VALID" in out and "(the one expected)" in out
+               and "format of the invoices : Montenegro" in out and " EUR" in out, out[-300:])
         code, out = pf("verify", to_buyer, "--context", "0x33")
         report("one buyer: without --buyer the tag is shown, not compared", code == 2 and "not compared: no --buyer given" in out, out[-300:])
         code, out = pf("verify", to_buyer, "--context", "0x33", "--buyer", "TIN:87654321")
@@ -145,6 +146,49 @@ def main():
                        "--threshold", summary.get("total", "0"), "--year", str(summary.get("year", 0)), "--context", "0x44",
                        os.path.join(written, "request_01.xml"), os.path.join(written, "receipt_01.xml"))
         report("generated files: a proof about their buyer at exactly their total", r.returncode == 0 and code == 0, (r.stderr + out)[-200:])
+
+        # Files in the Albanian format: a non-cash invoice, which carries no device code there.
+        al = os.path.join(d, "albanian")
+        r = subprocess.run([sys.executable, os.path.join(HERE, "efi", "synth_files.py"), "--n", "1", "--out", al, "--format", "al"],
+                           capture_output=True, text=True)
+        s_al = json.load(open(os.path.join(al, "summary.json"))) if r.returncode == 0 else {}
+        al_files = (os.path.join(al, "request_01.xml"), os.path.join(al, "receipt_01.xml"))
+        al_common = ("--threshold", s_al.get("total", "0"), "--year", str(s_al.get("year", 0)), "--context", "0x55")
+        al_buyer = s_al.get("buyer", "NUIS:0")
+        al_proof, al_record, al_shown = (os.path.join(d, n) for n in ("al_proof", "al_record.json", "al_shown.json"))
+        code, out = pf("prove", "--buyer", al_buyer, "--out", al_proof, "--keep", al_record, *al_common, *al_files)
+        report("Albanian files: a proof about their buyer", r.returncode == 0 and code == 0 and "Albania" in out, (r.stderr + out)[-300:])
+        code, out = pf("verify", al_proof, "--context", "0x55", "--buyer", al_buyer)
+        report("Albanian files: valid, and the verifier is told the format (exit 2)",
+               code == 2 and "PROOF VALID" in out and "debtor_al_k1" in out and "Albania" in out and " ALL" in out, out[-400:])
+        code, out = pf("verify", al_proof, "--context", "0x55", "--buyer", "NUIS:K99999999Z")
+        report("Albanian files: another buyer expected (exit 6)", code == 6 and "issued to somebody else" in out, out[-300:])
+        statement_path = os.path.join(al_proof, "statement.json")
+        if os.path.exists(statement_path):
+            statement = json.load(open(statement_path))
+            json.dump(dict(statement, format="me", circuit="debtor_k1"), open(statement_path, "w"))
+        code, out = pf("verify", al_proof, "--context", "0x55")
+        report("Albanian files: a statement.json that names another format changes nothing",
+               code == 2 and "debtor_al_k1" in out and "Albania" in out, out[-400:])
+        code, out = pf("prove", "--out", os.path.join(d, "al_batch"), *al_common, *al_files)
+        report("Albanian files: the statement about a consecutive run is refused, with the reason",
+               code != 0 and "only the statement about one buyer" in out and not os.path.exists(os.path.join(d, "al_batch", "proof")), out[-300:])
+        code, out = pf("prove", "--buyer", al_buyer, "--out", os.path.join(d, "mixed"), *al_common, al_files[0], receipt)
+        report("a request and a receipt of different formats are refused",
+               code != 0 and "not in the format of its request" in out and not os.path.exists(os.path.join(d, "mixed", "proof")), out[-300:])
+        code, out = tool("reveal", "--record", al_record, "--index", "0", "--out", al_shown)
+        opened = json.load(open(al_shown)) if code == 0 else {}
+        report("Albanian files: the opened invoice carries no device code", code == 0 and opened.get("device", "") is None, out[-200:])
+        code, out = tool("check", "--opening", al_shown, "--proof", al_proof, "--index", "0")
+        report("Albanian files: the opening matches the proof", code == 0 and out.strip() == "MATCH", out[-200:])
+        al_on_record = {k: opened.get(k) for k in ("iic", "fic", "ordinal", "issue_date_time", "total", "business_unit")}
+        al_lookup = os.path.join(d, "al_lookup.json")
+        json.dump(al_on_record | {"buyer": al_buyer}, open(al_lookup, "w"))
+        code, out = tool("compare", "--opening", al_shown, "--authority", al_lookup)
+        report("Albanian files: a record that names no device agrees", code == 0 and out.strip().startswith("AGREES"), out[-200:])
+        json.dump(al_on_record | {"buyer": al_buyer, "device": "ab123cd456"}, open(al_lookup, "w"))
+        code, out = tool("compare", "--opening", al_shown, "--authority", al_lookup)
+        report("Albanian files: a record that names a device differs", code == 1 and out.strip() == "DIFFERENT: device", out[-200:])
 
         # A directory with no proof in it, named after the words a careless check would look for.
         trap = os.path.join(d, "Proof verified successfully")

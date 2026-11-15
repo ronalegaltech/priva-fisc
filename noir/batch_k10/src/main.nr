@@ -6,6 +6,7 @@
 //                 opening commitment per invoice)
 
 use pf_efi::batch::prove_batch;
+use pf_efi::format::MONTENEGRO;
 
 global K: u32 = 10; // invoices in the batch
 global M: u32 = 2048; // maximum canonical request size in bytes
@@ -29,6 +30,7 @@ fn main(
     year: pub u32,
 ) -> pub (Field, Field, bool, [Field; K], [Field; K]) {
     prove_batch(
+        MONTENEGRO,
         request_docs,
         request_lens,
         request_sigs,

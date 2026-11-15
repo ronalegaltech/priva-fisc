@@ -5,6 +5,7 @@
   pf.py prove  --out DIR --synthetic N [--keep FILE]      (invented invoices, for demos and tests)
   pf.py prove  --buyer TYPE:NUMBER --out DIR --threshold EUR --year Y --context HEX  REQ1.xml RESP1.xml [...]
   pf.py verify DIR [--context HEX] [--ledger FILE] [--taxpayer-cert FILE] [--buyer TYPE:NUMBER]
+  (with --synthetic, --format al writes the invented invoices in the Albanian format)
 
 `prove` runs on the taxpayer's machine. It reads signed request/response files (in ordinal order),
 proves the statement, and leaves in DIR only what may be handed over: the proof, its public values
@@ -48,6 +49,13 @@ request, which embeds it) `verify` checks that the key in the certificate is the
 and prints the certificate's subject. Checking the certificate itself (issuer, validity,
 revocation) is done with ordinary X.509 tools and is not part of this command.
 
+Formats. The files of two countries are read: Montenegro, and Albania, whose fiscalization
+exchanges the same signed messages (tools/efi/formats.py says what differs and what each format
+was written against; the Albanian one against the published specification only). The format is
+read from the files themselves. Each format has its own circuits, and `verify` says which format a
+proof is in. For Albanian files only the statement about one buyer (--buyer) is built; the amounts
+are then in lek, and a non-cash invoice, which carries no device code there, counts like any other.
+
 Run `. tools/toolchain.env` first.
 """
 import argparse
@@ -67,6 +75,7 @@ import agg  # noqa: E402
 import batch_inputs  # noqa: E402
 import buyer as buyer_reader  # noqa: E402
 import debtor_inputs  # noqa: E402
+import formats  # noqa: E402
 import keyhash  # noqa: E402
 import opening  # noqa: E402
 import poseidon2  # noqa: E402
@@ -107,12 +116,13 @@ def parse_buyer(text):
     return buyer_reader.pack(*text.split(":"))
 
 
-def decode_one_buyer(values):
+def decode_one_buyer(values, fmt=formats.MONTENEGRO):
     k, count = agg.one_buyer_slots(values), values[5]
     if not 1 <= count <= k:
         sys.exit("unexpected number of invoices in the public values")
     return {
-        "circuit": f"debtor_k{k}",
+        "circuit": fmt.one_buyer_circuit(k),
+        "format": fmt.name,
         "statement": "invoices issued to one buyer",
         "invoice_count": count,
         "threshold_cents": values[0],
@@ -131,7 +141,8 @@ def prove_one_buyer(a):
         n = a.synthetic
         if not 1 <= n <= 10:
             sys.exit("a proof about one buyer holds 1 to 10 invoices")
-        s = debtor_inputs.synthetic(1 if n == 1 else 10, count=n)
+        fmt = formats.by_name(a.format)
+        s = debtor_inputs.synthetic(1 if n == 1 else 10, count=n, fmt=fmt)
         if a.context:
             s["context"] = agg.parse_context(a.context)
         named = buyer_reader.unpack(s["buyer"])
@@ -141,10 +152,10 @@ def prove_one_buyer(a):
         if a.threshold is None or a.year is None or a.context is None:
             sys.exit("--threshold, --year and --context (the value the verifier issued) are required with real files")
         named, wanted = a.buyer, parse_buyer(a.buyer)
-        invoices, tmods, imods = [], set(), set()
+        invoices, tmods, imods, fmts = [], set(), set(), set()
         for number, (req_path, resp_path) in enumerate(zip(a.files[0::2], a.files[1::2]), 1):
-            doc, req_sig, tmod = batch_inputs.ingest_request(open(req_path, "rb").read())
-            fields, resp_sig, imod = batch_inputs.ingest_response(open(resp_path, "rb").read())
+            doc, req_sig, tmod, fields, resp_sig, imod, fmt = read_pair(req_path, resp_path, number)
+            fmts.add(fmt)
             try:
                 found = buyer_reader.buyer_id(bytes(doc))
             except buyer_reader.BuyerError as e:
@@ -154,6 +165,8 @@ def prove_one_buyer(a):
             tmods.add(tmod)
             imods.add(imod)
             invoices.append({"doc": doc, "req_sig": req_sig, "resp": fields, "resp_sig": resp_sig, "salt": secrets.randbits(248)})
+        if len(fmts) != 1:
+            sys.exit("no proof: the files are not all in one country's format")
         if len(tmods) != 1 or len(imods) != 1:
             sys.exit("the files are not all signed by one taxpayer key and one authority key")
         n = len(invoices)
@@ -166,8 +179,9 @@ def prove_one_buyer(a):
              "context": agg.parse_context(a.context), "year": a.year}
 
     k = len(s["invoices"])
-    package = os.path.join(ROOT, "noir", f"debtor_k{k}")
-    run(["nargo", "compile"], cwd=package, what=f"compiling debtor_k{k}")
+    circuit = fmt.one_buyer_circuit(k)
+    package = os.path.join(ROOT, "noir", circuit)
+    run(["nargo", "compile"], cwd=package, what=f"compiling {circuit}")
     tag = "Run" + next(tempfile._get_candidate_names())
     prover_file = os.path.join(package, f"Prover{tag}.toml")
     witness = os.path.join(package, "target", f"witness{tag}.gz")
@@ -177,7 +191,7 @@ def prove_one_buyer(a):
             f.write(debtor_inputs.prover_toml(s))
         run(["nargo", "execute", "-p", f"Prover{tag}", f"witness{tag}"], cwd=package, what="the statement does not hold for these invoices; witness generation")
         with tempfile.TemporaryDirectory() as tmp:
-            run(["bb", "prove", "-b", os.path.join(package, "target", f"debtor_k{k}.json"), "-w", witness, "-o", tmp, "-t", "evm", "--write_vk"], what="proving")
+            run(["bb", "prove", "-b", os.path.join(package, "target", f"{circuit}.json"), "-w", witness, "-o", tmp, "-t", "evm", "--write_vk"], what="proving")
             for name in ("proof", "public_inputs"):
                 shutil.copy(os.path.join(tmp, name), os.path.join(a.out, name))
     finally:
@@ -185,8 +199,10 @@ def prove_one_buyer(a):
             if os.path.exists(path):
                 os.remove(path)
     with open(os.path.join(a.out, "statement.json"), "w") as f:
-        json.dump(decode_one_buyer(read_values(os.path.join(a.out, "public_inputs"))), f, indent=1)
+        json.dump(decode_one_buyer(read_values(os.path.join(a.out, "public_inputs")), fmt), f, indent=1)
     print(f"proof for {n} invoice(s) issued to one buyer written to {a.out} (proof, public_inputs, statement.json)")
+    if fmt is not formats.MONTENEGRO:
+        print(f"format of the invoices: {fmt.country} ({fmt.basis})")
     if a.synthetic:
         print(f"buyer of the invented invoices: {named}")
     if a.keep:
@@ -194,6 +210,17 @@ def prove_one_buyer(a):
             dict(opening.opening_of(i["doc"], i["resp"][3], hex(i["salt"])), buyer=named) for i in s["invoices"][:n]]})
         print(f"record of the invoices written to {a.keep} - keep it private")
     return 0
+
+
+def read_pair(req_path, resp_path, number):
+    """One signed request and its signed receipt, which must be in the same country's format."""
+    try:
+        doc, req_sig, tmod = batch_inputs.ingest_request(open(req_path, "rb").read())
+        fmt = formats.of_request(bytes(doc))
+        fields, resp_sig, imod = batch_inputs.ingest_response(open(resp_path, "rb").read(), fmt)
+    except ValueError as e:
+        sys.exit(f"no proof: invoice {number}: {e}")
+    return doc, req_sig, tmod, fields, resp_sig, imod, fmt
 
 
 def run(cmd, cwd=None, what=None):
@@ -236,6 +263,8 @@ def prove(a):
     if a.buyer:
         return prove_one_buyer(a)
     if a.synthetic:
+        if not formats.by_name(a.format).has_batch_circuits:
+            sys.exit(f"no proof: for the format of {formats.by_name(a.format).country} only the statement about one buyer (--buyer) is built")
         k = a.synthetic
         invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(k, None, 1, None)
         if a.context:
@@ -246,9 +275,11 @@ def prove(a):
         if a.threshold is None or a.year is None or a.context is None:
             sys.exit("--threshold, --year and --context (the value the verifier issued) are required with real files")
         invoices, tmods, imods = [], set(), set()
-        for req_path, resp_path in zip(a.files[0::2], a.files[1::2]):
-            doc, req_sig, tmod = batch_inputs.ingest_request(open(req_path, "rb").read())
-            fields, resp_sig, imod = batch_inputs.ingest_response(open(resp_path, "rb").read())
+        for number, (req_path, resp_path) in enumerate(zip(a.files[0::2], a.files[1::2]), 1):
+            doc, req_sig, tmod, fields, resp_sig, imod, fmt = read_pair(req_path, resp_path, number)
+            if not fmt.has_batch_circuits:
+                sys.exit(f"no proof: invoice {number} is in the format of {fmt.country}, for which only the "
+                         "statement about one buyer (--buyer) is built")
             tmods.add(tmod)
             imods.add(imod)
             invoices.append({"doc": doc, "req_sig": req_sig, "resp": fields, "resp_sig": resp_sig})
@@ -311,11 +342,13 @@ def verify(a):
     values = read_values(os.path.join(a.dir, "public_inputs"))
     one_buyer = agg.one_buyer_slots(values)
     kind = None if one_buyer else agg.kind_of(values)
+    fmt = formats.MONTENEGRO
     if one_buyer:
-        if not agg.verify_one_buyer(a.dir, one_buyer):
+        fmt = agg.one_buyer_format(a.dir, one_buyer)
+        if fmt is None:
             print("PROOF INVALID")
             return 1
-        st = decode_one_buyer(values)
+        st = decode_one_buyer(values, fmt)
         k = st["invoice_count"]
         circuit_line = f"{st['circuit']} (verification key derived locally)"
         nullifiers = st["nullifiers"]
@@ -344,11 +377,12 @@ def verify(a):
     issuer = keys.get(int(st["issuer_key_hash"], 16))
     print("PROOF VALID")
     print(f"  circuit                : {circuit_line}")
+    print(f"  format of the invoices : {fmt.country}" + ("" if fmt is formats.MONTENEGRO else f" - written against {fmt.basis}"))
     if one_buyer:
         print(f"  what is proved         : {k} invoice(s) issued to one buyer in {st['year']}, each signed by the")
         print("                           taxpayer key and each with an authority receipt for the same request;")
         print("                           none with a negative total; no receipt used twice;")
-        print(f"                           sum of totals >= {st['threshold_cents'] // 100}.{st['threshold_cents'] % 100:02d} EUR")
+        print(f"                           sum of totals >= {st['threshold_cents'] // 100}.{st['threshold_cents'] % 100:02d} {fmt.currency}")
     else:
         print(f"  what is proved         : {k} consecutive invoice(s) of one business unit and one device,")
         print(f"                           issued in {st['year']}, each signed by the taxpayer key and each with")
@@ -429,6 +463,8 @@ def main():
     p.add_argument("--year", type=int)
     p.add_argument("--context", help="hex value the verifier issued for this presentation; random if omitted")
     p.add_argument("--synthetic", type=int, metavar="N")
+    p.add_argument("--format", default="me", choices=[f.name for f in formats.ALL],
+                   help="with --synthetic: the country format of the invented invoices (default me)")
     p.add_argument("--keep", metavar="FILE", help="write the spot-check record (private) to FILE")
     p.add_argument("--buyer", metavar="TYPE:NUMBER", help="prove that the invoices were all issued to this buyer, e.g. TIN:02345678")
     p.add_argument("files", nargs="*")

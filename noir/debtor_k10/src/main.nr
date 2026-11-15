@@ -6,6 +6,7 @@
 //                 nullifier per slot, opening commitment per slot)
 
 use pf_efi::debtor::prove_debtor;
+use pf_efi::format::MONTENEGRO;
 
 global K: u32 = 10; // slots
 global M: u32 = 2048; // maximum canonical request size in bytes
@@ -31,6 +32,7 @@ fn main(
     year: pub u32,
 ) -> pub (Field, Field, u32, Field, [Field; K], [Field; K]) {
     prove_debtor(
+        MONTENEGRO,
         request_docs,
         request_lens,
         request_sigs,

@@ -14,7 +14,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from lxml import etree
 
-NS = {"ds": "http://www.w3.org/2000/09/xmldsig#", "e": "https://efi.tax.gov.me/fs/schema"}
+import formats
+
+NS = {"ds": "http://www.w3.org/2000/09/xmldsig#"}
 DS = "{http://www.w3.org/2000/09/xmldsig#}"
 
 # Must stay byte-identical to SI_HEAD / SI_MID / SI_TAIL in noir/pf_xmldsig/src/lib.nr.
@@ -124,9 +126,14 @@ def ingest_signed(xml: bytes, localname: str, uri: bytes):
     canonical SignedInfo does not match the fixed template, or the signature does not verify.
     """
     root = etree.fromstring(xml, etree.XMLParser(remove_blank_text=True, resolve_entities=False, no_network=True))
-    el = root if etree.QName(root).localname == localname else root.find(".//e:" + localname, NS)
+    el = None
+    for f in formats.ALL:
+        tag = "{" + f.namespace + "}" + localname
+        el = root if root.tag == tag else root.find(".//" + tag)
+        if el is not None:
+            break
     if el is None:
-        raise ValueError(f"no {localname} element")
+        raise ValueError(f"no {localname} element of a format this tool reads")
     sig = el.find("ds:Signature", NS)
     if sig is None:
         raise ValueError(f"{localname} is not signed")

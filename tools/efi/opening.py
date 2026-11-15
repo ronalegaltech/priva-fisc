@@ -74,6 +74,7 @@ import tomllib
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import buyer as buyer_reader  # noqa: E402
+import formats  # noqa: E402
 import poseidon2  # noqa: E402
 
 OPEN_PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "open_invoice"))
@@ -94,8 +95,12 @@ def reveal(prover_path, index):
 
 
 def opening_of(doc, fic, salt):
-    """The preimage of one invoice's opening commitment, from its canonical request and receipt code."""
-    tag = doc[200:]
+    """The preimage of one invoice's opening commitment, from its canonical request and receipt code.
+    "device" is None for an invoice without a device code (a format where it is optional)."""
+    fmt = formats.of_request(bytes(doc))
+    tag = doc[fmt.tag_start:]
+    start_tag = re.sub(rb'"[^"]*"', lambda m: b'"' + b"x" * (len(m.group(0)) - 2) + b'"', tag)
+    start_tag = tag[:start_tag.index(b">")]
 
     def attr(name):
         m = re.search(rb' ' + name + rb'="([^"]*)"', tag)
@@ -111,7 +116,7 @@ def opening_of(doc, fic, salt):
         "issue_date_time": attr(b"IssueDateTime"),
         "total": attr(b"TotPrice"),
         "business_unit": attr(b"BusinUnitCode"),
-        "device": attr(b"TCRCode"),
+        "device": attr(b"TCRCode") if fmt.device_required or b' TCRCode="' in start_tag else None,
         "salt": salt,
         # Not part of the commitment; the verifier needs it to query the invoice-check service.
         "seller_id": seller.group(1).decode() if seller else None,
@@ -130,7 +135,7 @@ def field_values(o):
     cents = 0 if digits == "0" else int(digits.replace(".", ""))
     if digits != "0" and not re.fullmatch(r"\d+\.\d\d", digits):
         raise ValueError("total is not in the expected form")
-    for code in (o["business_unit"], o["device"]):
+    for code in (o["business_unit"],) + ((o["device"],) if o["device"] is not None else ()):
         if not re.fullmatch(r"[a-z]{2}\d{3}[a-z]{2}\d{3}", code):
             raise ValueError("a registration code is not in the expected form")
     named = {}
@@ -148,7 +153,8 @@ def field_values(o):
         "total_cents": str(cents),
         # Registration codes enter the circuit as their ten bytes, packed big-endian.
         "unit": hex(int.from_bytes(o["business_unit"].encode(), "big")),
-        "device": hex(int.from_bytes(o["device"].encode(), "big")),
+        # An invoice without a device code has device 0.
+        "device": hex(int.from_bytes(o["device"].encode(), "big")) if o["device"] is not None else "0x0",
         "salt": o["salt"],
     }
 
@@ -301,7 +307,7 @@ def check_against_proof(o, proof_dir, ordinal=None, edge=None, point=None, seed=
     if slots is not None:
         # Proof about one buyer: threshold, context, year, two key hashes, the number of invoices,
         # the buyer tag, then K nullifiers and K commitments with zeros in the unused places.
-        if "buyer" not in o or not (verified or agg.verify_one_buyer(proof_dir, slots)):
+        if "buyer" not in o or not (verified or agg.one_buyer_format(proof_dir, slots) is not None):
             return False
         count = values[5]
         if point is not None or seed is not None or type(position) is not int or not 0 <= position < count:
@@ -373,6 +379,8 @@ def differences(o, lookup, certificate_subject=None):
             return value
         if name == "total":
             return cents(value)
+        if name == "device" and value is None:
+            return None
         if not isinstance(value, str):
             raise ValueError("not text")
         return value
@@ -380,8 +388,10 @@ def differences(o, lookup, certificate_subject=None):
     out = []
     for name in COMPARED:
         try:
-            same = normal(name, o[name]) == normal(name, lookup[name])
-        except (KeyError, ValueError, TypeError):
+            # A record that names no device agrees with an invoice that has none.
+            theirs = lookup.get("device") if name == "device" else lookup[name]
+            same = normal(name, o[name]) == normal(name, theirs)
+        except (KeyError, ValueError, TypeError, AttributeError):
             same = False
         if not same:
             out.append(name)

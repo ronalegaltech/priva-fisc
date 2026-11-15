@@ -4,6 +4,7 @@
 // A component benchmark and test target. The reader and its limits are documented in
 // ../pf_efi/src/request.nr; the end-to-end statement lives in ../pf_efi/src/batch.nr.
 
+use pf_efi::format::MONTENEGRO;
 use pf_efi::request::request_fields_and_digest;
 use pf_xmldsig::{assert_rsa_sha256, rsa_key_hash};
 use poseidon::poseidon2::Poseidon2;
@@ -22,7 +23,7 @@ fn main(
     redc_param: [u128; 18],
     salt: Field,
 ) -> pub (Field, Field) {
-    let (f, digest) = request_fields_and_digest(doc, doc_len);
+    let (f, digest) = request_fields_and_digest(MONTENEGRO, doc, doc_len);
     let signer_key_hash = rsa_key_hash(modulus);
     assert_rsa_sha256(digest, signature, modulus, redc_param);
 

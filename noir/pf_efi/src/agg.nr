@@ -18,6 +18,7 @@
 // (the run's fic_chain and the hash of S), recomputed by the top circuit.
 
 use crate::batch::{BatchCore, check_invoices};
+use crate::format::Format;
 use poseidon::poseidon2::Poseidon2;
 
 // Domain separators: ASCII "PF-RUN0001", "PF-PAIR001", "PF-GAMMA01", "PF-SORTED1", "PF-SCOPE01",
@@ -210,7 +211,8 @@ pub fn scope_nullifier(context: Field, taxpayer_key_tag: Field, unit: Field, dev
 /// Leaf statement. Public: context, year, gamma, and the key hashes of the leaf and node circuits
 /// (carried along so that every proof in a tree has the same public layout; a leaf does not
 /// constrain them). Returns (taxpayer key hash, authority key hash, blinded run commitment).
-pub fn prove_leaf<let K: u32, let M: u32>(
+pub fn prove_leaf<let K: u32, let M: u32, let H: u32, let L: u32>(
+    format: Format<H, L>,
     request_docs: [[u8; M]; K],
     request_lens: [u32; K],
     request_sigs: [[u128; 18]; K],
@@ -231,6 +233,7 @@ pub fn prove_leaf<let K: u32, let M: u32>(
     gamma: Field,
 ) -> (Field, Field, Field) {
     let c = check_invoices(
+        format,
         request_docs,
         request_lens,
         request_sigs,
@@ -254,7 +257,8 @@ pub fn prove_leaf<let K: u32, let M: u32>(
 /// The same computation as `prove_leaf`, returning the run and the leaf's opening commitments in
 /// the clear. For the PROVER's own use (executed, never proved or shared): the next proof up needs
 /// the run as private input, and a later spot check needs the opening commitments.
-pub fn leaf_run_in_clear<let K: u32, let M: u32>(
+pub fn leaf_run_in_clear<let K: u32, let M: u32, let H: u32, let L: u32>(
+    format: Format<H, L>,
     request_docs: [[u8; M]; K],
     request_lens: [u32; K],
     request_sigs: [[u128; 18]; K],
@@ -274,6 +278,7 @@ pub fn leaf_run_in_clear<let K: u32, let M: u32>(
     gamma: Field,
 ) -> ([Field; 12], [Field; K]) {
     let c = check_invoices(
+        format,
         request_docs,
         request_lens,
         request_sigs,

@@ -15,33 +15,22 @@ Privacy: this tool never prints UUIDs, FICs or signatures. It prints lengths and
 """
 import argparse
 import datetime
-import re
 import secrets
 import sys
 import uuid
 
 from lxml import etree
 
-from efi_common import NS, canonical_without_signature, ingest_signed, modulus_of, new_key, sign, \
+import formats
+from efi_common import canonical_without_signature, ingest_signed, modulus_of, new_key, sign, \
     signature_element, signed_info, toml_bytes, toml_signature_block
-
-EFI = "{https://efi.tax.gov.me/fs/schema}"
-
-# Must stay byte-identical to DOC_P0..DOC_P4 in noir/pf_efi/src/response.nr.
-DOC_P0 = b'<RegisterInvoiceResponse xmlns="https://efi.tax.gov.me/fs/schema" Id="Response" Version="1"><Header RequestUUID="'
-DOC_P1 = b'" SendDateTime="'
-DOC_P2 = b'" UUID="'
-DOC_P3 = b'"></Header><FIC>'
-DOC_P4 = b"</FIC></RegisterInvoiceResponse>"
-DOC_RE = re.compile(
-    re.escape(DOC_P0) + b"(.{36})" + re.escape(DOC_P1) + b"(.{25})" + re.escape(DOC_P2)
-    + b"(.{36})" + re.escape(DOC_P3) + b"(.{36})" + re.escape(DOC_P4),
-    re.S,
-)
+from formats import MONTENEGRO
 
 
 def build_doc(req_uuid: bytes, send_dt: bytes, resp_uuid: bytes, fic: bytes) -> bytes:
-    return DOC_P0 + req_uuid + DOC_P1 + send_dt + DOC_P2 + resp_uuid + DOC_P3 + fic + DOC_P4
+    """The canonical Montenegrin response for these four values (leaf_response_v0 is a Montenegrin
+    circuit). The templates of all formats are in formats.py."""
+    return MONTENEGRO.build_response(req_uuid, send_dt, resp_uuid, fic)
 
 
 def write_prover(path, fields, signature: int, modulus: int, salt: int):
@@ -53,19 +42,25 @@ def write_prover(path, fields, signature: int, modulus: int, salt: int):
         f.write(out)
 
 
-def ingest_xml(xml: bytes):
-    """Signed response -> (fields, signature int, modulus int). Raises on anything unexpected."""
+def ingest_xml(xml: bytes, fmt=None):
+    """Signed response -> (fields, signature int, modulus int). Raises on anything unexpected.
+    With `fmt`, the response must be in that format (the one of its request)."""
     doc, signature, modulus = ingest_signed(xml, "RegisterInvoiceResponse", b"Response")
-    m = DOC_RE.fullmatch(doc)
-    if m is None:
+    try:
+        found = formats.of_response(doc)
+    except formats.UnknownFormat:
         raise ValueError(f"canonical response does not match the v0 template (len {len(doc)})")
-    return m.groups(), signature, modulus
+    if fmt is not None and found is not fmt:
+        raise ValueError("the response is not in the format of its request")
+    return found.response_re.fullmatch(doc).groups(), signature, modulus
 
 
-def synthetic_soap(key, fields) -> bytes:
+def synthetic_soap(key, fields, fmt=MONTENEGRO) -> bytes:
     """A response shaped like what the CIS sends: SOAP envelope, non-canonical attribute order."""
     req_uuid, send_dt, resp_uuid, fic = (f.decode() for f in fields)
-    resp = etree.Element(EFI + "RegisterInvoiceResponse", nsmap={None: NS["e"]}, Id="Response", Version="1")
+    EFI = "{" + fmt.namespace + "}"
+    resp = etree.Element(EFI + "RegisterInvoiceResponse", nsmap={fmt.response_prefix or None: fmt.namespace},
+                         Id="Response", Version=fmt.version)
     etree.SubElement(resp, EFI + "Header", UUID=resp_uuid, RequestUUID=req_uuid, SendDateTime=send_dt)
     etree.SubElement(resp, EFI + "FIC").text = fic
     resp.append(signature_element(key, b"Response", canonical_without_signature(resp)))

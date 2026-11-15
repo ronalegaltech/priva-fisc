@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
 import batch_inputs  # noqa: E402
+import formats  # noqa: E402
 import poseidon2  # noqa: E402
 
 # BN254 scalar field, the field the circuits compute in.
@@ -199,13 +200,30 @@ def one_buyer_slots(values):
     return next((k for k in BATCH_SIZES if len(values) == 7 + 2 * k), None)
 
 
-def verify_one_buyer(proof_dir, k):
-    """True if the proof verifies under the key derived here from noir/debtor_k{k}."""
-    name = f"debtor_k{k}"
+def verify_one_buyer(proof_dir, k, name=None):
+    """True if the proof verifies under the key derived here from the circuit `name`
+    (noir/debtor_k{k}, the Montenegrin one, unless another is named)."""
+    name = name or f"debtor_k{k}"
     with tempfile.TemporaryDirectory() as tmp:
         run(["bb", "write_vk", "-b", compiled(name), "-o", tmp, "-t", "evm"], what=f"key of {name}")
         return bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
                            os.path.join(proof_dir, "public_inputs"))
+
+
+def one_buyer_format(proof_dir, k):
+    """The format whose circuit the proof about one buyer in `proof_dir` verifies under, or None.
+    Each format has its own circuit and key; the proof is tried under each key, derived here. The
+    format a statement.json names only decides which one is tried first."""
+    hint = None
+    try:
+        with open(os.path.join(proof_dir, "statement.json")) as f:
+            hint = json.load(f).get("format")
+    except (OSError, ValueError, AttributeError):
+        pass
+    for f in sorted(formats.ALL, key=lambda f: f.name != hint):
+        if verify_one_buyer(proof_dir, k, f.one_buyer_circuit(k)):
+            return f
+    return None
 
 
 def verify_batch(proof_dir):

@@ -7,6 +7,7 @@
 // Proved with `bb prove -t noir-recursive` so that another circuit can verify it.
 
 use pf_efi::agg::prove_leaf;
+use pf_efi::format::MONTENEGRO;
 
 global K: u32 = 1;
 global M: u32 = 2048;
@@ -36,6 +37,7 @@ fn main(
     let _ = leaf_vk_hash;
     let _ = node_vk_hash;
     prove_leaf(
+        MONTENEGRO,
         request_docs,
         request_lens,
         request_sigs,

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Accept/reject tests for the debtor circuits: invoices one seller issued to one buyer.
 
-  python3 tools/efi/test_debtor.py            # 1-invoice circuit (fast)
-  python3 tools/efi/test_debtor.py --k 10     # 10-invoice circuit
+  python3 tools/efi/test_debtor.py                  # 1-invoice circuit (fast)
+  python3 tools/efi/test_debtor.py --k 10           # 10-invoice circuit
+  python3 tools/efi/test_debtor.py --format al      # the same for the Albanian format
 
 A valid set must execute and publish what a verifier can recompute: the number of invoices, the
 buyer tag, each nullifier (the same value the batch circuits give that invoice) and each opening
@@ -18,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import agg  # noqa: E402
 import debtor_inputs  # noqa: E402
+import formats  # noqa: E402
 import opening  # noqa: E402
 import poseidon2  # noqa: E402
 
@@ -41,8 +43,10 @@ def expected(s, k):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--k", type=int, default=1)
+    ap.add_argument("--format", default="me", choices=[f.name for f in formats.ALL])
     a = ap.parse_args()
-    name, k = f"debtor_k{a.k}", a.k
+    fmt = formats.by_name(a.format)
+    name, k = fmt.one_buyer_circuit(a.k), a.k
     failed = 0
 
     def report(label, good, detail=""):
@@ -71,13 +75,13 @@ def main():
         values = [int(v, 0) for v in re.findall(r"0x[0-9a-f]+|\b\d+\b", re.search(r"Circuit output: (.*)", text).group(1))]
         return True, values[2:], ""
 
-    s = debtor_inputs.synthetic(k)
+    s = debtor_inputs.synthetic(k, fmt=fmt)
     accepted, published, why = run(s)
     report("all slots to one buyer", accepted and published == expected(s, k),
            f"accepted, {s['count']} invoice(s), published values recomputed" if accepted else f"rejected [{why}]")
 
     if k > 1:
-        s = debtor_inputs.synthetic(k, count=3)
+        s = debtor_inputs.synthetic(k, count=3, fmt=fmt)
         accepted, published, why = run(s)
         good = accepted and published == expected(s, k) and published[0] == 3
         report("3 invoices, filler after", good,
@@ -86,10 +90,17 @@ def main():
         at_most = dict(s, threshold=s["total"])
         report("threshold equal to the sum", run(at_most)[0], "accepted")
 
-    for t in debtor_inputs.TAMPERS:
+    if not fmt.device_required:
+        # In this format an invoice may carry no device code; its opening then has device 0.
+        without = [opening.opening_of(inv["doc"], inv["resp"][3], hex(inv["salt"]))["device"] is None
+                   for inv in s["invoices"][:s["count"]]]
+        report("invoices without a device code", any(without) and (k == 1 or not all(without)),
+               f"{sum(without)} of {len(without)} invoice(s) in the accepted set had none")
+
+    for t in debtor_inputs.tampers(fmt):
         if k == 1 and t in debtor_inputs.NEEDS_TWO:
             continue
-        accepted, _, why = run(debtor_inputs.synthetic(k, t))
+        accepted, _, why = run(debtor_inputs.synthetic(k, t, fmt=fmt))
         report(t, not accepted, "accepted" if accepted else f"rejected [{why}]")
 
     print("all cases behave as required" if not failed else f"{failed} case(s) WRONG")

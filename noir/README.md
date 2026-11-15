@@ -5,10 +5,11 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | Package | Kind | What it does |
 |---|---|---|
 | `pf_xmldsig` | library | Enveloped XML-DSig with exclusive C14N, SHA-256 and RSA-2048 PKCS#1 v1.5: rebuilds the canonical `SignedInfo` from a fixed template around the document digest, checks the signature, hashes the signer key. The first 512 bytes of `SignedInfo` never change, so their SHA-256 state is a constant and only the last three blocks are hashed in the circuit. Parsers for UUIDs, timestamps, amounts and registration codes that constrain every character. |
-| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `buyer.nr` reads the buyer named in it; `response.nr` rebuilds the 318-byte authority-signed `RegisterInvoiceResponse`; `batch.nr` is the statement over K invoices; `debtor.nr` is the statement over invoices issued to one buyer; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
+| `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `buyer.nr` reads the buyer named in it; `response.nr` rebuilds the authority-signed `RegisterInvoiceResponse` (318 bytes in the Montenegrin format); `format.nr` holds what differs from one country to another (fixed text, and whether every invoice names a device); `batch.nr` is the statement over K invoices; `debtor.nr` is the statement over invoices issued to one buyer; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
 | `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (375,992 and 3,664,134 gates; about 4 s and 33 s with `pf.py prove --buyer`). |
+| `debtor_al_k1`, `debtor_al_k10` | circuit | The same statement for invoices in the Albanian format (see below). An invoice without a device code has device 0 in its opening commitment (380,004 and 3,702,745 gates). |
 | `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices (the 10-slot leaf may hold fewer), publishes a blinded commitment to the run. |
 | `agg_node` | circuit | Joins two adjacent runs, each proved by a leaf or by another node. |
 | `agg_sorted_s4096` | circuit | Up to 4,096 receipt codes sorted strictly increasing. |
@@ -41,6 +42,23 @@ attribute. Refused outside a value, because canonical XML never has them there a
 could read them differently from this scan: a single quote, a tab or line break, and a namespace
 declaration on `<Invoice>`. The document must end with its two closing tags. Numbers and dates
 have one accepted form (no leading zeros, month, day and time in range, offset +01:00 or +02:00).
+
+## Country formats
+
+Every circuit that reads a request or a receipt is built for one format, a compile-time constant
+from `pf_efi/src/format.nr`: the canonical request up to the value of `SendDateTime`, the canonical
+response with zeros where its four values go, and whether every invoice names a device. The
+offsets the request reader uses follow from the length of that text. Each format therefore gives
+its own circuit and its own verification key, and a document of one format is refused by a
+circuit of another (header template mismatch for a request, a signature that does not verify for
+a receipt).
+
+`MONTENEGRO` was written against the published schema and real messages of the tax
+administration's test environment. `ALBANIA` was written against the published specification only
+(version 09): no real signed message has been seen, and the response is spelled as in the
+specification's example, with the prefix `ns2`. In the Albanian format the device code is optional,
+because a non-cash invoice carries none: it may occur once or not at all, and an invoice without
+one has device 0. Only the statement about one buyer has circuits for this format.
 
 ## What is derived from what
 

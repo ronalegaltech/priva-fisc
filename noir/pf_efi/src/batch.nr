@@ -37,6 +37,7 @@
 // prover repeats one of its own), but nothing read from them reaches any result. The batch
 // circuits always use all K; the aggregation leaves (agg.nr) take `count` as an input.
 
+use crate::format::Format;
 use crate::request::request_fields_and_digest;
 use crate::response::response_fields_and_digest;
 use pf_xmldsig::{assert_rsa_sha256, rsa_key_hash, rsa_key_tag};
@@ -136,7 +137,8 @@ pub fn summarise<let K: u32>(lines: [Line; K], count: u32) -> (u64, u64, Field, 
 /// first `count` of them, the same unit and device and consecutive ordinals. It does NOT check
 /// that receipts are distinct and does not apply any threshold: callers do that (see `prove_batch`
 /// here and agg.nr).
-pub fn check_invoices<let K: u32, let M: u32>(
+pub fn check_invoices<let K: u32, let M: u32, let H: u32, let L: u32>(
+    format: Format<H, L>,
     request_docs: [[u8; M]; K],
     request_lens: [u32; K],
     request_sigs: [[u128; 18]; K],
@@ -165,10 +167,11 @@ pub fn check_invoices<let K: u32, let M: u32>(
     let mut lines: [Line; K] = [Line { ordinal: 0, unit: 0, device: 0, negative: false, cents: 0 }; K];
 
     for i in 0..K {
-        let (req, req_digest) = request_fields_and_digest(request_docs[i], request_lens[i]);
+        let (req, req_digest) = request_fields_and_digest(format, request_docs[i], request_lens[i]);
         assert_rsa_sha256(req_digest, request_sigs[i], taxpayer_modulus, taxpayer_redc);
 
         let (resp, resp_digest) = response_fields_and_digest(
+            format,
             resp_request_uuids[i],
             resp_send_dts[i],
             resp_uuids[i],
@@ -229,7 +232,8 @@ pub fn check_invoices<let K: u32, let M: u32>(
     }
 }
 
-pub fn prove_batch<let K: u32, let M: u32>(
+pub fn prove_batch<let K: u32, let M: u32, let H: u32, let L: u32>(
+    format: Format<H, L>,
     request_docs: [[u8; M]; K],
     request_lens: [u32; K],
     request_sigs: [[u128; 18]; K],
@@ -248,6 +252,7 @@ pub fn prove_batch<let K: u32, let M: u32>(
     year: u32,
 ) -> (Field, Field, bool, [Field; K], [Field; K]) {
     let c = check_invoices(
+        format,
         request_docs,
         request_lens,
         request_sigs,
