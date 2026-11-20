@@ -27,13 +27,33 @@ declare, deploy, list the authority key, submit (accepted: about 865M L2 gas for
 invoices issued to their buyer, are refused the same way: a valid proof of another kind about
 invoices the registry has already recorded. The
 cost of an aggregate does not depend on how many invoices it covers. Starknet documents a limit of
-1.11 * 10^9 L2 gas per transaction. Nothing is deployed to a public network.
+1.11 * 10^9 L2 gas per transaction.
 
-The same flow is scripted for the public test network in `tools/starknet/sepolia_demo.sh` and has
-been rehearsed on a local network, including deploying the account. Declaring is most of the cost:
-about 1.9 * 10^9 L2 gas for the ECIP helper, 4.8 * 10^9 for each of the three verifiers and
-0.6 * 10^9 for the registry (measured locally). At the Sepolia gas price of 13 Nov 2026 the whole
-run comes to about 470 STRK, or about 200 STRK with the batch alone.
+The same flow ran on the public test network (Starknet Sepolia) on 20 Nov 2026, with
+`tools/starknet/sepolia_demo.sh`. The invoices were invented and signed by throw-away keys.
+
+| | Transaction | L2 gas | Fee |
+|---|---|---|---|
+| batch of 10 | `0x05bde60c82f855751e1075f829f7254cc1f7bdeabf6a0283754d8f44491c1085` | 865,198,560 | 24.2 STRK |
+| 3 invoices to one buyer | `0x03c045eeaac290b0abdef1d7f7a8b96cca07aed4b9094b8e36a8f60681a18f93` | 861,086,240 | 24.1 STRK |
+| aggregate of 25 | `0x05d18977a64e6db8094fa8c630eaf6bcc0d9a0cc67133b38896b55d96e068ee0` | 822,454,160 | 23.0 STRK |
+
+The registry is at `0x007963f970475a3c410b260b6b3335f4449f87a0f8e5e4961cb1e93df296cf19` and holds
+three attestations. Each proof was submitted a second time and refused with
+`invoice already presented`, and so were the three invoices of the batch proved again as invoices
+issued to their buyer. Nothing is deployed to mainnet.
+
+Declaring is most of the cost: 53 STRK for the ECIP helper, 135, 133 and 135 STRK for the three
+verifiers and 17 STRK for the registry (locally about 1.9 * 10^9 L2 gas, 4.8 * 10^9 each and
+0.6 * 10^9). With the account, the deployment of the registry and the listing of keys the whole
+run came to 545 STRK at a gas price of about 28 * 10^9 fri. With the batch alone it would be about
+230 STRK. This is test-network money; what the same gas costs on mainnet has not been measured.
+
+Two things to know about that run. sncast's own fee bound (the estimate plus a half) was refused by
+Sepolia for a proof (`maximum allowed gas amount: 1210000000`), so the script estimates first and
+sends with bounds it works out itself. Two attempts stopped there before the script was changed;
+each had already listed the key of its throw-away signer, so the registry lists five keys and has
+attestations under three of them.
 
 The registry records the context a proof was made for; it cannot know which context a relying
 party issued. The first attestation in a context decides which kind of proof that context takes,

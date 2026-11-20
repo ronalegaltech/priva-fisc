@@ -11,10 +11,11 @@
 # The account is an sncast account (name in PF_ACCOUNT, default pf-demo). Its key lives in sncast's
 # accounts file, never in this repository. Create it once with
 #   sncast account create --network sepolia --name pf-demo
-# and send test STRK to the address it prints. At the gas price of 13 Nov 2026 the whole run takes
-# about 470 STRK (declaring each of the three verifiers is about 115 STRK). PF_SKIP_AGGREGATE=1 and
-# PF_SKIP_ONE_BUYER=1 each leave out one kind of proof and its verifier, about 135 STRK; with both
-# the run takes about 200 STRK.
+# and send test STRK to the address it prints. The run of 20 Nov 2026 took 545 STRK at a gas price
+# of about 28 * 10^9 fri: about 135 STRK to declare each of the three verifiers, 53 for the ECIP
+# helper, 17 for the registry, about 24 for each proof. PF_SKIP_AGGREGATE=1 and PF_SKIP_ONE_BUYER=1
+# each leave out one kind of proof and its verifier, about 160 STRK; with both the run takes about
+# 230 STRK.
 #
 # The script can be run again after a failure: a class that is already declared is reused, so is a
 # registry already deployed by an earlier run (its address is kept in PF_STATE), and a proof the
@@ -32,6 +33,20 @@ FILE=""; [ -n "${PF_ACCOUNTS_FILE:-}" ] && FILE="--accounts-file $PF_ACCOUNTS_FI
 SN="sncast $FILE --account $ACCOUNT --wait"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 REASON="$(python3 -c 'print(b"invoice already presented".hex())')"
+# Submitting a proof takes about 0.86 billion L2 gas. Left to itself sncast asks for the estimate
+# plus a half, and Sepolia turns that down: one transaction may ask for at most 1.21 billion
+# (seen 20 Nov 2026). So a proof is first estimated without being sent, then sent with the bounds
+# worked out here: every estimate plus a half, the L2 gas held at PF_L2_GAS.
+L2_GAS="${PF_L2_GAS:-1200000000}"
+bounds() { python3 -c '
+import sys, json
+e = json.loads(sys.stdin.read().strip().splitlines()[-1]); cap = int(sys.argv[1])
+num = lambda k: int(str(e[k]), 0)
+up = lambda k: (num(k) * 3 + 1) // 2
+if num("l2_gas_consumed") > cap: sys.exit("the proof takes %d L2 gas, over the bound of %d" % (num("l2_gas_consumed"), cap))
+print("--l1-gas %d --l1-gas-price %d --l2-gas %d --l2-gas-price %d --l1-data-gas %d --l1-data-gas-price %d" % (
+    up("l1_gas_consumed"), up("l1_gas_price"), min(up("l2_gas_consumed"), cap), up("l2_gas_price"),
+    up("l1_data_gas_consumed"), up("l1_data_gas_price")))' "$L2_GAS"; }
 cd "$ROOT/starknet/pf_registry"
 
 u256_of_file() { python3 -c 'import sys; v=int.from_bytes(open(sys.argv[1],"rb").read(),"big"); print(hex(v & ((1<<128)-1)), hex(v>>128))' "$1"; }
@@ -112,10 +127,12 @@ present() {
     ( cd "$WORK/cd_$1" && "$PF_GARAGA" calldata --system ultra_keccak_zk_honk --proof "$3/proof" --vk "$WORK/vk_$1/vk" \
         --public-inputs "$3/public_inputs" --format starkli >"$WORK/cd_$1/calldata.txt" 2>/dev/null )
     $SN invoke $NET --contract-address "$CONTRACT" --function set_issuer_key --calldata $(u256_of_key "$3/statement.json") 1 >/dev/null 2>&1
-    OUT="$($SN invoke $NET --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_$1/calldata.txt") 2>&1 || true)"
+    EST="$($SN --json invoke $NET --dry-run --detailed --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_$1/calldata.txt") 2>&1 || true)"
+    if printf '%s' "$EST" | grep -q -e "$REASON" -e "invoice already presented"; then echo "    $4 was already recorded by an earlier run"; return 0; fi
+    FEE="$(printf '%s\n' "$EST" | bounds)" || { printf '%s\n' "$EST"; echo "    estimate failed"; exit 1; }
+    OUT="$($SN invoke $NET $FEE --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_$1/calldata.txt") 2>&1 || true)"
     TX="$(printf '%s\n' "$OUT" | field 'Transaction Hash')"
     if [ -n "$TX" ]; then echo "    $4 accepted: $(link tx "$TX")"; receipt "$TX"
-    elif printf '%s' "$OUT" | grep -q -e "$REASON" -e "invoice already presented"; then echo "    $4 was already recorded by an earlier run"; return 0
     else printf '%s\n' "$OUT"; echo "    submission failed"; exit 1; fi
     if $SN invoke $NET --contract-address "$CONTRACT" --function "$1" --calldata $(cat "$WORK/cd_$1/calldata.txt") 2>&1 | grep -q -e "$REASON" -e "invoice already presented"; then
         echo "    same $4 again: refused (invoice already presented)"

@@ -277,10 +277,12 @@ Apple M3, 16 GB.
 An aggregate costs about 40 s more for every further leaf of 10 (times vary by a tenth from run to
 run). Leaves are proved one after another, so memory does not grow with the number of invoices.
 
-On a local Starknet network each kind of proof is accepted in one transaction: about 865M L2 gas
-for the batch of 10, 861M for 3 invoices to one buyer and 822M for an aggregate of 25, under the
-documented limit of 1.11 * 10^9 per transaction. The on-chain cost of an aggregate does not grow with the number of invoices. Nothing
-has been deployed to a public network.
+On Starknet each kind of proof is accepted in one transaction: about 865M L2 gas for the batch of
+10, 861M for 3 invoices to one buyer and 822M for an aggregate of 25, under the documented limit
+of 1.11 * 10^9 per transaction. The figures are from the public test network (Sepolia, run of
+20 Nov 2026 with invented invoices; addresses and fees in `starknet/README.md`) and agree with a
+local network to within a quarter of a percent. The on-chain cost of an aggregate does not grow
+with the number of invoices. Nothing has been deployed to mainnet.
 
 ## Limits
 
