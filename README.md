@@ -2,11 +2,13 @@
 
 Proofs over signed fiscal records.
 
-In Montenegro's electronic fiscalization system (EFI, law 46/2019) every invoice leaves two signed
-files with the taxpayer: the request the taxpayer signed and sent to the tax authority, and the
-receipt the authority signed back. PRIVA-FISC takes a run of such pairs and produces one proof of a
-statement like "these are 10 consecutive invoices of one cash register, each with a valid receipt,
-and their total is at least 5,000 EUR", without showing the invoices to whoever checks the proof.
+In Montenegro's electronic fiscalization system (EFI, law 46/2019) invoicing software exchanges two
+signed files with the tax authority for every invoice it issues: the request signed with the
+taxpayer's key, and the receipt the authority signed back. Invoices created in the authority's own
+portal have no request signed by the taxpayer and are out of scope. PRIVA-FISC takes a run of such
+pairs and produces one proof of a statement like "these are 10 consecutive invoices of one cash
+register, each with a valid receipt, and their total is at least 5,000 EUR", without showing the
+invoices to whoever checks the proof.
 
 Status: research prototype. It has not been reviewed by anyone outside the team. Do not rely on it.
 
@@ -72,12 +74,12 @@ those of a batch, so the two kinds share a context and its ledger.
 ### A second country's format: Albania
 
 Albania's fiscalization exchanges the same two signed messages and signs them the same way
-("Fiscalization Service, Technical Specification", version 09, published by the tax
-administration). What differs is fixed text (the address of the schema, the version, how the
-response is spelled) and one attribute: a non-cash invoice carries no device code there, while in
-Montenegro every invoice has one. `noir/pf_efi/src/format.nr` holds these differences and nothing
-else. A circuit is built for one format, so each country has its own circuits and verification
-keys; adding the second format left the verification keys of the Montenegrin circuits unchanged.
+("Fiscalization Service, Technical Specification", version 09, published by the tax administration).
+What differs is fixed text (the address of the schema, the version, how the response is spelled) and
+one attribute: a non-cash invoice carries no device code there, while in Montenegro every invoice
+request has one. `noir/pf_efi/src/format.nr` holds these differences and nothing else. A circuit is
+built for one format, so each country has its own circuits and verification keys; adding the second
+format left the verification keys of the Montenegrin circuits unchanged.
 
 For Albanian files the statement about one buyer is built (`debtor_al_k1`, `debtor_al_k10`).
 `pf.py` reads the format from the files themselves and `verify` says which format a proof is in;
