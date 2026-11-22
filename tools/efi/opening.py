@@ -331,8 +331,8 @@ def check_against_proof(o, proof_dir, ordinal=None, edge=None, point=None, seed=
     if index is not None:
         # An aggregated proof does not publish the places of its invoices.
         return False
-    ok, st, _, leaf_size = agg.verify(proof_dir) if not verified else (True, agg.decode(values), [], agg.leaf_size_of(values))
-    if not ok or leaf_size is None:
+    ok, st, _, family = agg.verify(proof_dir) if not verified else (True, agg.decode(values), [], agg.family_of(values))
+    if not ok or family is None:
         return False
     located = o.get("proof")
     if not isinstance(located, dict):
@@ -351,8 +351,11 @@ def check_against_proof(o, proof_dir, ordinal=None, edge=None, point=None, seed=
         point = draw_point(seed, root, draw)
     if point is not None and (r != point or covers != 1):
         return False
-    # The circuit is the one for the leaf size the proof itself names, not one the opening names.
-    return agg.verify_proof(f"spot_open_k{leaf_size}", bytes.fromhex(located["proof"]), public)
+    # The circuit is one for a leaf of the family the proof itself names, not one the opening
+    # names. A leaf commits to its slots together with their number, so a proof for a leaf of one
+    # size cannot stand for a leaf of another.
+    return any(agg.verify_proof(f"spot_open_k{k}", bytes.fromhex(located["proof"]), public)
+               for k in agg.slot_counts(family))
 
 
 COMPARED = ("iic", "fic", "ordinal", "issue_date_time", "total", "business_unit", "device")

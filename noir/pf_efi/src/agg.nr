@@ -1,8 +1,12 @@
 // Aggregation: more invoices than one circuit can hold.
 //
-// The invoices are cut, in ordinal order, into leaves of up to K. A LEAF proof checks its invoices
+// The invoices are cut, in ordinal order, into leaves. A LEAF proof checks its invoices
 // (check_invoices; a leaf may be partly filled, see batch.nr) and publishes only a blinded
-// commitment to the summary of that run. A NODE proof
+// commitment to the summary of that run. There are leaf circuits of several sizes, because the
+// cost of an invoice grows with the length of its request: one holds many short requests, another
+// a few long ones. A tree may mix them; which leaf circuits it may be built from is fixed by one
+// value, the commitment to their key hashes (leaf_keys_commitment), that every proof in the tree
+// carries and the verifier of the final proof compares with its own. A NODE proof
 // (../pf_agg) verifies two proofs of adjacent runs, each a leaf or another node, and publishes the
 // commitment of the joined run. A TOP proof verifies the proof of the whole run and one proof about
 // the sorted list of receipt codes, and states the result.
@@ -22,7 +26,7 @@ use crate::format::Format;
 use poseidon::poseidon2::Poseidon2;
 
 // Domain separators: ASCII "PF-RUN0001", "PF-PAIR001", "PF-GAMMA01", "PF-SORTED1", "PF-SCOPE01",
-// "PF-CODES01", "PF-SUMLEAF", "PF-SUMPAIR", "PF-SUMROOT".
+// "PF-CODES01", "PF-SUMLEAF", "PF-SUMPAIR", "PF-SUMROOT", "PF-LEAVES1".
 pub global DOMAIN_RUN: Field = 0x50462d52554e30303031;
 pub global DOMAIN_PAIR: Field = 0x50462d50414952303031;
 pub global DOMAIN_GAMMA: Field = 0x50462d47414d4d413031;
@@ -32,6 +36,16 @@ pub global DOMAIN_CODES: Field = 0x50462d434f4445533031;
 pub global DOMAIN_SUM_LEAF: Field = 0x50462d53554d4c454146;
 pub global DOMAIN_SUM_PAIR: Field = 0x50462d53554d50414952;
 pub global DOMAIN_SUM_ROOT: Field = 0x50462d53554d524f4f54;
+pub global DOMAIN_LEAF_KEYS: Field = 0x50462d4c454156455331;
+
+/// How many leaf circuits a tree may be built from.
+pub global LEAF_KINDS: u32 = 4;
+
+/// Commitment to the key hashes of the leaf circuits a tree may be built from, in a fixed order.
+/// A family with fewer than LEAF_KINDS circuits repeats one of them.
+pub fn leaf_keys_commitment(keys: [Field; LEAF_KINDS]) -> Field {
+    Poseidon2::hash([DOMAIN_LEAF_KEYS, keys[0], keys[1], keys[2], keys[3]], 5)
+}
 
 /// Summary of a run of consecutive invoices (one leaf, or several leaves joined). Kept private
 /// inside `run_commitment`.
@@ -208,9 +222,10 @@ pub fn scope_nullifier(context: Field, taxpayer_key_tag: Field, unit: Field, dev
     Poseidon2::hash([DOMAIN_SCOPE, context, taxpayer_key_tag, unit, device, year], 6)
 }
 
-/// Leaf statement. Public: context, year, gamma, and the key hashes of the leaf and node circuits
-/// (carried along so that every proof in a tree has the same public layout; a leaf does not
-/// constrain them). Returns (taxpayer key hash, authority key hash, blinded run commitment).
+/// Leaf statement. Public: context, year, gamma, the commitment to the key hashes of the leaf
+/// circuits and the key hash of the node circuit (the last two are carried along so that every
+/// proof in a tree has the same public layout; a leaf does not constrain them). Returns
+/// (taxpayer key hash, authority key hash, blinded run commitment).
 pub fn prove_leaf<let K: u32, let M: u32, let H: u32, let L: u32>(
     format: Format<H, L>,
     request_docs: [[u8; M]; K],
@@ -382,4 +397,13 @@ fn test_join_adds_up() {
 #[test(should_fail_with = "join: runs of different presentations")]
 fn test_join_rejects_other_scope() {
     let _ = join_runs(run_of(1, 9, 0), run_of(11, 10, 0));
+}
+
+#[test]
+fn test_leaf_keys_commitment_binds_every_place() {
+    let keys = [11, 12, 13, 14];
+    let c = leaf_keys_commitment(keys);
+    assert(c != leaf_keys_commitment([12, 11, 13, 14])); // the order counts
+    assert(c != leaf_keys_commitment([11, 12, 13, 15])); // and so does a place no leaf may use
+    assert(c != leaf_keys_commitment([11, 12, 13, 13]));
 }

@@ -164,7 +164,8 @@ def build_request(key, c, tricky: bool, fmt=MONTENEGRO):
     """Unsigned request element, written in a NON-canonical attribute order on purpose.
     c["no_device"]: an invoice without a device code, numbered the way the Albanian specification
     numbers non-cash invoices. c["send"]: the header's time, when it is not the issue time.
-    c["late"]: a late-delivery word for the header. c["plain_zero"]: amounts of zero written 0."""
+    c["late"]: a late-delivery word for the header. c["plain_zero"]: amounts of zero written 0.
+    c["lines"]: the number of lines of the invoice, when it has more than one."""
     def amount(cents):
         return "0" if (cents == 0 and c.get("plain_zero")) else money(cents)
 
@@ -214,10 +215,17 @@ def build_request(key, c, tricky: bool, fmt=MONTENEGRO):
         etree.SubElement(inv, EFI + "Buyer", IDType=buyer["type"], IDNum=buyer["num"], Name=buyer_name)
     items = etree.SubElement(inv, EFI + "Items")
     names = ['Usluga TotPrice="9.99"', 'Stavka > InvOrdNum="3"'] if tricky else ["Pravna usluga"]
-    for n in names:
-        etree.SubElement(items, EFI + "I", N=n, C="1", U="kom", Q="1.00", UPB=amount(c["net"]),
-                         UPA=amount(c["total"]), R="0.00", RR="false", PB=amount(c["net"]), VR="21.00",
-                         VA=amount(c["vat"]), PA=amount(c["total"]))
+    lines = [(n, "1", c["net"], c["vat"]) for n in names]
+    if c.get("lines", 1) > 1:
+        # An invoice of several lines; they share the amounts out, the last one takes the rest.
+        names = [f"Pravna usluga {j + 1}" for j in range(c["lines"])]
+        net, vat = c["net"] // len(names), c["vat"] // len(names)
+        lines = [(n, str(j + 1), net, vat) for j, n in enumerate(names[:-1])]
+        lines.append((names[-1], str(len(names)), c["net"] - net * len(lines), c["vat"] - vat * len(lines)))
+    for n, code, net, vat in lines:
+        etree.SubElement(items, EFI + "I", N=n, C=code, U="kom", Q="1.00", UPB=amount(net),
+                         UPA=amount(net + vat), R="0.00", RR="false", PB=amount(net), VR="21.00",
+                         VA=amount(vat), PA=amount(net + vat))
     st = etree.SubElement(inv, EFI + "SameTaxes")
     etree.SubElement(st, EFI + "SameTax", NumOfItems=str(len(names)), PriceBefVAT=amount(c["net"]),
                      VATRate="21.00", VATAmt=amount(c["vat"]))

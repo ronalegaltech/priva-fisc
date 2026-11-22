@@ -1,7 +1,7 @@
 // agg_node: joins two adjacent runs, each proved by a leaf or by another node.
 // Statement: ../pf_agg/src/lib.nr.
 //
-// Public inputs : context, year, gamma, leaf_vk_hash, node_vk_hash
+// Public inputs : context, year, gamma, leaf_keys_hash, node_vk_hash
 // Public outputs: (taxpayer key hash, authority key hash, blinded commitment of the joined run)
 // Proved with `bb prove -t noir-recursive`.
 
@@ -12,30 +12,34 @@ fn main(
     vks: [UltraHonkVerificationKey; 2],
     proofs: [UltraHonkZKProof; 2],
     is_leaf: [bool; 2],
+    leaf_kinds: [u32; 2],
     runs: [[Field; 12]; 2],
     blinds: [Field; 2],
     blind_out: Field,
     taxpayer_key_hash: Field,
     issuer_key_hash: Field,
+    leaf_keys: [Field; 4],
     context: pub Field,
     year: pub u32,
     gamma: pub Field,
-    leaf_vk_hash: pub Field,
+    leaf_keys_hash: pub Field,
     node_vk_hash: pub Field,
 ) -> pub (Field, Field, Field) {
     prove_node(
         vks,
         proofs,
         is_leaf,
+        leaf_kinds,
         runs,
         blinds,
         blind_out,
         taxpayer_key_hash,
         issuer_key_hash,
+        leaf_keys,
         context,
         year,
         gamma,
-        leaf_vk_hash,
+        leaf_keys_hash,
         node_vk_hash,
     )
 }

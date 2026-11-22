@@ -12,9 +12,10 @@
 //!   * 1 to 10 invoices issued to one buyer (noir/debtor_k10), with the same nullifier per invoice
 //!     as a batch, so an invoice shown in one of these two kinds is recognised in the other;
 //!   * an aggregate of any number of invoices (noir/agg_top), one scope nullifier for the whole
-//!     run (taxpayer key, business unit, device, year). The aggregate proof names the leaf, node
-//!     and sorted-list circuits it was built from; it is accepted only if those are the circuits
-//!     this registry was deployed with.
+//!     run (taxpayer key, business unit, device, year). The aggregate proof names the circuits
+//!     it was built from: one commitment to the key hashes of the leaf circuits (there is one
+//!     leaf circuit per length of request) and the key hashes of the node and sorted-list
+//!     circuits. It is accepted only if those are the values this registry was deployed with.
 //! A nullifier per invoice and a scope nullifier cannot be compared with each other, so a context
 //! takes proofs with one kind of nullifier only: batches and proofs about one buyer together, or
 //! aggregates. The first attestation in a context decides which. (Whoever holds a valid proof of
@@ -42,9 +43,10 @@ use starknet::{ClassHash, ContractAddress};
 pub const BATCH_SIZE: u32 = 10;
 pub const BATCH_PUBLIC_VALUES: u32 = 26;
 
-/// Public values of an aggregate proof, in order: threshold, context, year, key hashes of the leaf,
-/// node and sorted-list circuits, taxpayer key hash, issuer key hash, starts-at-one, number of
-/// invoices, root of the opening tree, scope nullifier.
+/// Public values of an aggregate proof, in order: threshold, context, year, the commitment to the
+/// key hashes of the leaf circuits, the key hashes of the node and sorted-list circuits, taxpayer
+/// key hash, issuer key hash, starts-at-one, number of invoices, root of the opening tree, scope
+/// nullifier.
 pub const AGGREGATE_PUBLIC_VALUES: u32 = 12;
 
 /// Public values of a proof about one buyer, in order: threshold, context, year, taxpayer key
@@ -90,7 +92,8 @@ pub trait IPrivaFiscRegistry<TContractState> {
     fn batch_verifier(self: @TContractState) -> ClassHash;
     fn aggregate_verifier(self: @TContractState) -> ClassHash;
     fn one_buyer_verifier(self: @TContractState) -> ClassHash;
-    /// Key hashes of the (leaf, node, sorted-list) circuits an aggregate proof must come from.
+    /// What an aggregate proof must name: the commitment to the key hashes of the leaf circuits,
+    /// and the key hashes of the node and sorted-list circuits.
     fn aggregate_circuits(self: @TContractState) -> (u256, u256, u256);
 }
 
@@ -116,7 +119,7 @@ pub mod PrivaFiscRegistry {
         batch_verifier: ClassHash,
         aggregate_verifier: ClassHash,
         one_buyer_verifier: ClassHash,
-        leaf_vk_hash: u256,
+        leaf_keys_hash: u256,
         node_vk_hash: u256,
         sorted_vk_hash: u256,
         issuer_keys: Map<u256, bool>,
@@ -195,7 +198,7 @@ pub mod PrivaFiscRegistry {
         owner: ContractAddress,
         batch_verifier: ClassHash,
         aggregate_verifier: ClassHash,
-        leaf_vk_hash: u256,
+        leaf_keys_hash: u256,
         node_vk_hash: u256,
         sorted_vk_hash: u256,
         one_buyer_verifier: ClassHash,
@@ -204,7 +207,7 @@ pub mod PrivaFiscRegistry {
         self.batch_verifier.write(batch_verifier);
         self.aggregate_verifier.write(aggregate_verifier);
         self.one_buyer_verifier.write(one_buyer_verifier);
-        self.leaf_vk_hash.write(leaf_vk_hash);
+        self.leaf_keys_hash.write(leaf_keys_hash);
         self.node_vk_hash.write(node_vk_hash);
         self.sorted_vk_hash.write(sorted_vk_hash);
     }
@@ -331,7 +334,8 @@ pub mod PrivaFiscRegistry {
             let scope_nullifier = *values.at(11);
 
             // The top proof only says "proofs of the circuits with these key hashes verified".
-            assert(*values.at(3) == self.leaf_vk_hash.read(), 'unknown leaf circuit');
+            // The leaf circuits come as one value: a commitment to their key hashes.
+            assert(*values.at(3) == self.leaf_keys_hash.read(), 'unknown leaf circuits');
             assert(*values.at(4) == self.node_vk_hash.read(), 'unknown node circuit');
             assert(*values.at(5) == self.sorted_vk_hash.read(), 'unknown sorted circuit');
             assert(self.issuer_keys.read(issuer_key_hash), 'issuer key not registered');
@@ -450,7 +454,7 @@ pub mod PrivaFiscRegistry {
         }
 
         fn aggregate_circuits(self: @ContractState) -> (u256, u256, u256) {
-            (self.leaf_vk_hash.read(), self.node_vk_hash.read(), self.sorted_vk_hash.read())
+            (self.leaf_keys_hash.read(), self.node_vk_hash.read(), self.sorted_vk_hash.read())
         }
     }
 }

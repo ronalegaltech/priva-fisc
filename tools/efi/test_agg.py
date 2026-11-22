@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Accept/reject tests for the aggregation tree, all the way through PROVING.
 
-  python3 tools/efi/test_agg.py            # leaves of 1 invoice (fast)
-  python3 tools/efi/test_agg.py --k 10     # leaves of up to 10: full and partly filled leaves
+  python3 tools/efi/test_agg.py                      # the small family: leaves of 1 invoice (fast)
+  python3 tools/efi/test_agg.py --family standard    # leaves of up to 10, 5, 3 and 1, by length of request
 
 The proofs inside a node or the top proof are only checked when that proof is made, so every case
 here runs the prover. A case counts as "refused" when a circuit rejects its inputs or no valid proof
 comes out. After some accepted proofs a spot check is played out: the opening of an invoice must
 lead to the root the proof publishes, and an edited or misplaced opening must not.
+
+Both families hold leaf circuits for requests of different lengths, and both are run with trees
+that mix them: the small one cheaply and with the ways a prover could misuse the mix, the standard
+one with the circuits real invoices would go through.
 """
 import argparse
+import json
 import os
 import secrets
 import sys
@@ -34,10 +39,20 @@ def bump_first_run(items):
     items[0]["run"][5] += 10**8  # sum_plus of the first leaf
 
 
-def skip_four(invoices, k):
+def skip_four(invoices, family):
     """First leaf: only 6 of the first 10 invoices. Second leaf: invoices 11 to 20. Four left out."""
     first = invoices[:6]
-    return [(first + [first[-1]] * (k - 6), 6), (invoices[10:20], 10)]
+    return [(0, first + [first[-1]] * 4, 6), (0, invoices[10:20], 10)]
+
+
+def foreign_key_in_unused_place(keys):
+    """The list of leaf circuits with a key of another circuit in a place no leaf of the tree uses."""
+    return keys[:-1] + [agg.vk_hash("agg_node")]
+
+
+def other_kind(item):
+    """A leaf named as the family's other leaf circuit."""
+    return 1 - item["kind"]
 
 
 def spot_check(record, proof_dir, positions, n):
@@ -115,30 +130,37 @@ def left_deep(items, join):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--k", type=int, default=1, choices=agg.LEAF_SIZES)
+    ap.add_argument("--family", default="small", choices=list(agg.FAMILIES))
     a = ap.parse_args()
-    k = a.k
+    family = a.family
     failed = 0
 
-    def case(label, n, tamper=None, hooks=None, expect=None, spot=None, large=None):
+    def case(label, n, tamper=None, hooks=None, expect=None, spot=None, large=None, lines=None, leaves=None):
         """n invoices. expect=None: must be accepted. Otherwise: must be refused, with `expect` in
         the reason. spot: invoice positions to open after an accepted proof. large: position of
-        one invoice far larger than the rest; the draws by amount must mostly ask for it."""
+        one invoice far larger than the rest; the draws by amount must mostly ask for it. lines:
+        {position: number of lines} for invoices longer than one line. leaves: the numbers of
+        slots the leaves of the accepted tree must have, in order."""
         nonlocal failed
-        invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(n, tamper, 1, None, large=large)
+        invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(n, tamper, 1, None, large=large, lines=lines)
         checks = []
         with tempfile.TemporaryDirectory() as out:
-            record = os.path.join(out, "record.json") if spot or large is not None else None
+            record = os.path.join(out, "record.json") if spot or large is not None or leaves else None
             proof_dir = os.path.join(out, "proof")
             try:
-                st = agg.make_proof(k, invoices, tmod, imod, threshold, context, year, proof_dir, hooks=hooks, keep=record)
-                ok, _, problems, _ = agg.verify(proof_dir)
+                st = agg.make_proof(family, invoices, tmod, imod, threshold, context, year, proof_dir, hooks=hooks, keep=record)
+                # The verifier of these tests accepts the family under test and no other.
+                ok, _, problems, _ = agg.verify(proof_dir, families=(family,))
                 counted = st["invoice_count"] == n
                 outcome, reason = ("accepted", "") if ok and counted else ("refused", "; ".join(problems) or "wrong invoice count")
-                if ok and counted and spot:
-                    checks = list(spot_check(record, proof_dir, spot, n))
-                if ok and counted and large is not None:
-                    checks = list(weighted_draws(record, proof_dir, large))
+                if outcome == "accepted" and leaves:
+                    with open(record) as f:
+                        built = [len(leaf["openings"]) for leaf in json.load(f)["leaves"]]
+                    checks.append((f"leaves of {', '.join(str(k) for k in leaves)} slots", built == leaves))
+                if outcome == "accepted" and spot:
+                    checks += list(spot_check(record, proof_dir, spot, n))
+                if outcome == "accepted" and large is not None:
+                    checks += list(weighted_draws(record, proof_dir, large))
             except agg.StepFailed as e:
                 outcome, reason = "refused", str(e)
         good = (outcome == "accepted") if expect is None else (outcome == "refused" and expect in reason)
@@ -148,7 +170,7 @@ def main():
             failed += not passed
             print(f"{'PASS' if passed else 'FAIL'}  {what:38s} {'as required' if passed else 'WRONG'}", flush=True)
 
-    if k == 1:
+    if family == "small":
         case("valid, 1 leaf (no node)", 1)
         case("valid, 2 leaves", 2)
         case("valid, 3 leaves (node over node+leaf)", 3, spot=[2, 0])
@@ -160,12 +182,29 @@ def main():
         case("total below threshold", 2, tamper="below-threshold", expect="total is below the threshold")
         case("leaf proved with another challenge", 2, hooks={"leaf_gamma": 12345}, expect="proving agg_node")
         case("run edited after proving", 2, hooks={"runs": bump_first_run}, expect="proving agg_node")
-        case("wrong leaf circuit key hash", 2, hooks={"leaf_vk_hash": 1}, expect="proving agg_node")
         case("leaf passed off as a node", 2, hooks={"is_leaf": lambda item: False}, expect="proving agg_node")
+        # Leaf circuits for requests of different lengths in one tree. In this family the second
+        # circuit reads up to 4,096 bytes; an invoice of 8 lines needs it.
+        case("valid, a long request among short ones", 3, lines={1: 8}, spot=[1, 0], leaves=[1, 1, 1])
+        case("valid, one long request (no node)", 1, lines={0: 8})
+        case("long leaf named as the short circuit", 2, lines={1: 8}, hooks={"leaf_kind": other_kind},
+             expect="proving agg_node")
+        case("commitment to other leaf circuits", 2, hooks={"leaf_keys_hash": 1},
+             expect="not the leaf circuits of this tree")
+        case("a foreign key among the leaf circuits", 2, hooks={"leaf_keys": foreign_key_in_unused_place},
+             expect="names leaf circuits that are not the ones in this repository")
+        case("no such leaf circuit", 2, hooks={"leaf_kind": lambda item: agg.LEAF_KINDS},
+             expect="no such leaf circuit")
+        case("request longer than any leaf reads", 2, lines={1: 40}, expect="the longest the circuits read is 4096")
         case("leaf said to hold two invoices", 1, hooks={"count": lambda index, c: 2}, expect="more invoices than this circuit holds")
         case("valid, 4 leaves, one large invoice", 4, large=2)
         case("tree too deep for a spot check", 14, hooks={"reduce": left_deep}, expect="deeper than a spot check can follow")
     else:
+        # Requests of every length the family reads, in one run: 2 lines and fewer fit the leaf
+        # of 10; 30 lines need the leaf of 5, 70 lines the leaf of 3, 150 lines the leaf of 1.
+        case("valid, 14 invoices of mixed lengths", 14, lines={3: 30, 6: 70, 8: 150}, spot=[8, 6, 3, 0],
+             leaves=[5, 3, 1, 10])
+        case("request longer than any leaf reads", 3, lines={1: 240}, expect="the longest the circuits read is 32768")
         case("valid, 20 invoices (2 full leaves)", 20)
         case("valid, 23 invoices (10 + 10 + 3)", 23, spot=[22, 4])
         case("valid, 7 invoices (one leaf, no node)", 7, spot=[6])

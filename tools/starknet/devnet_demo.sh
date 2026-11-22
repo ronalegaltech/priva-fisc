@@ -50,11 +50,10 @@ REGISTRY="$(declare_class PrivaFiscRegistry)"
 [ -n "$ECIP" ] && [ -n "$BATCH_V" ] && [ -n "$AGG_V" ] && [ -n "$DEBTOR_V" ] && [ -n "$REGISTRY" ] || { echo "declare failed"; exit 1; }
 
 echo "2/7 deploying the registry (it is told which circuits aggregate proofs must come from) ..."
-CIRCUITS=""
-for c in agg_leaf_k10 agg_node agg_sorted_s4096; do
-    bb write_vk -b "$ROOT/noir/$c/target/$c.json" -o "$WORK/vk_$c" -t noir-recursive >/dev/null 2>&1
-    CIRCUITS="$CIRCUITS $(u256_of_file "$WORK/vk_$c/vk_hash")"
-done
+# what aggregates must be built from: the commitment to the leaf circuits, the node and the sorted-list circuit
+CIRCUITS="$(python3 "$ROOT/tools/efi/agg.py" circuits | python3 -c 'import sys
+print(" ".join("%s %s" % (hex(v & ((1 << 128) - 1)), hex(v >> 128)) for v in (int(line, 16) for line in sys.stdin)))')"
+[ -n "$CIRCUITS" ] || { echo "could not derive the circuit keys"; exit 1; }
 # shellcheck disable=SC2086
 CONTRACT="$($SN deploy --url "$URL" --class-hash "$REGISTRY" --constructor-calldata "$ADDR" "$BATCH_V" "$AGG_V" $CIRCUITS "$DEBTOR_V" 2>&1 | sed -n 's/^Contract Address: *//p')"
 [ -n "$CONTRACT" ] || { echo "deploy failed"; exit 1; }
@@ -116,7 +115,7 @@ python3 "$ROOT/tools/pf.py" prove --synthetic 3 --buyer any --context "$CTX" --o
 present attest_one_buyer "$ROOT/noir/debtor_k10/target/debtor_k10.json" "$WORK/debtor" "one-buyer proof"
 
 echo "6/7 aggregate of 25 invented invoices: prove three leaves (10, 10 and 5), join them, list the key, submit ..."
-python3 "$ROOT/tools/efi/agg.py" prove --k 10 --n 25 --synthetic --out "$WORK/agg" >/dev/null
+python3 "$ROOT/tools/efi/agg.py" prove --n 25 --synthetic --out "$WORK/agg" >/dev/null
 present attest_aggregate "$ROOT/noir/agg_top/target/agg_top.json" "$WORK/agg" aggregate
 
 echo "7/7 what the registry recorded:"

@@ -2,14 +2,16 @@
 # Every test in one command.
 #
 #   . tools/toolchain.env && sh tools/test.sh          # about 10 minutes once the circuits are compiled
-#   . tools/toolchain.env && sh tools/test.sh full     # about 40 minutes more, needs 6 GB of free memory
-# The first run compiles every circuit it touches, which adds about 15 minutes (four minutes for
-# each of the 10-invoice circuits).
+#   . tools/toolchain.env && sh tools/test.sh full     # about an hour more, needs 6 GB of free memory
+# The first run compiles every circuit it touches, which adds about 15 minutes to the default run
+# and about 50 to the full one (four to six minutes for each of the large circuits).
 #
 # The default run covers the libraries, the 1-invoice circuits, the command line, the spot-check
 # tools and the aggregation tree over leaves of one invoice (which proves, joins and verifies real
-# proofs). `full` adds the 10-invoice circuits, the Starknet contracts against real proofs, the run
-# on a local Starknet network and the demonstration.
+# proofs, with leaf circuits for two lengths of request). `full` adds the 10-invoice circuits, the
+# aggregation tree over the leaves real invoices go through (10, 5, 3 and 1 invoices by length of
+# request), an invoice of many lines from files, the Starknet contracts against real proofs, the
+# run on a local Starknet network and the demonstration.
 #
 # Four steps compare with material that is not kept here and are skipped without it: the schema
 # the tax administration publishes (PF_EFI_XSD_DIR, see tools/efi/test_schema.py), the test vectors
@@ -65,7 +67,8 @@ if [ "${1:-}" = "full" ]; then
     step "10 invoices"                 python3 tools/efi/test_batch.py --k 10
     step "10 invoices to one buyer"    python3 tools/efi/test_debtor.py --k 10
     step "the same, Albanian format"   python3 tools/efi/test_debtor.py --k 10 --format al
-    step "aggregation, leaves of 10"   python3 tools/efi/test_agg.py --k 10
+    step "aggregation, leaves by length" python3 tools/efi/test_agg.py --family standard
+    step "command line, long invoice"  python3 tools/test_cli.py --long
     step "registry contract"           in_dir starknet/pf_registry snforge test
     step "local Starknet network"      sh tools/starknet/devnet_demo.sh
     step "demonstration"               python3 tools/demo.py

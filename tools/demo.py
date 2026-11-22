@@ -42,7 +42,7 @@ def registered_total(invoices):
     return sum(int(i["authority"]["total"].replace(".", "")) for i in invoices)
 
 
-def presentation(k, n, inflate):
+def presentation(family, n, inflate):
     """One taxpayer, one proof, one verifier. Returns (every opening accepted, number of openings
     that differ from the authority's record)."""
     invoices, tmod, imod, _, _, year = batch_inputs.synthetic(n, None, 1, None, inflate=inflate)
@@ -59,7 +59,7 @@ def presentation(k, n, inflate):
     with tempfile.TemporaryDirectory() as work:
         proof_dir, record = os.path.join(work, "proof"), os.path.join(work, "record.json")
         started = time.time()
-        agg.make_proof(k, invoices, tmod, imod, threshold, context, year, proof_dir, keep=record)
+        agg.make_proof(family, invoices, tmod, imod, threshold, context, year, proof_dir, keep=record)
         ok, st, problems, _ = agg.verify(proof_dir)
         if not ok or int(st["context"], 16) != context:
             print("  the proof was NOT accepted: " + "; ".join(problems))
@@ -90,17 +90,17 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--quick", action="store_true", help="4 invoices in leaves of 1")
     a = ap.parse_args()
-    k, n = (1, 4) if a.quick else (10, 25)
+    family, n = ("small", 4) if a.quick else ("standard", 25)
 
     try:
         print("PART 1: an honest taxpayer")
-        accepted, differing = presentation(k, n, None)
+        accepted, differing = presentation(family, n, None)
         honest = accepted and differing == 0
         print("  result: " + ("nothing to object to" if honest else "UNEXPECTED"))
 
         print()
         print("PART 2: one invoice signed again with 500,000.00 more before tax")
-        accepted, differing = presentation(k, n, n * 2 // 3)
+        accepted, differing = presentation(family, n, n * 2 // 3)
         caught = accepted and differing > 0
         print(f"  result: " + (f"caught, {differing} of {DRAWS + 1} openings differ from the authority's record" if caught
                                else "NOT caught in this run"))

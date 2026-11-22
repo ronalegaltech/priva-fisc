@@ -231,8 +231,8 @@ fn test_aggregate_cannot_be_presented_twice() {
 }
 
 #[test]
-#[should_panic(expected: 'unknown leaf circuit')]
-fn test_aggregate_from_another_leaf_circuit_is_refused() {
+#[should_panic(expected: 'unknown leaf circuits')]
+fn test_aggregate_from_other_leaf_circuits_is_refused() {
     let s = setup_with(Wrong::Leaf);
     list_issuer_key(s.registry, *s.aggregate_values.at(7));
     s.registry.attest_aggregate(aggregate_proof());

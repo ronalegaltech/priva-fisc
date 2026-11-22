@@ -1,9 +1,10 @@
-// agg_leaf_k10: aggregation LEAF over up to 10 invoices. Statement and method: ../pf_efi/src/agg.nr.
+// agg_leaf_k10: aggregation LEAF over up to 10 invoices, each request up to 2048 canonical bytes.
+// Statement and method: ../pf_efi/src/agg.nr.
 //
 // `count` (private) is the number of invoices in the leaf; unused slots repeat one of them.
-// Public inputs : context, year, gamma, leaf_vk_hash, node_vk_hash
+// Public inputs : context, year, gamma, leaf_keys_hash, node_vk_hash
 // Public outputs: (taxpayer key hash, authority key hash, blinded run commitment)
-// The two key hashes are carried, not constrained (see ../pf_agg/src/lib.nr).
+// The last two public inputs are carried, not constrained (see ../pf_agg/src/lib.nr).
 // Proved with `bb prove -t noir-recursive` so that another circuit can verify it.
 
 use pf_efi::agg::prove_leaf;
@@ -31,10 +32,10 @@ fn main(
     context: pub Field,
     year: pub u32,
     gamma: pub Field,
-    leaf_vk_hash: pub Field,
+    leaf_keys_hash: pub Field,
     node_vk_hash: pub Field,
 ) -> pub (Field, Field, Field) {
-    let _ = leaf_vk_hash;
+    let _ = leaf_keys_hash;
     let _ = node_vk_hash;
     prove_leaf(
         MONTENEGRO,

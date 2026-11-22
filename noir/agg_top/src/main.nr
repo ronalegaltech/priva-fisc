@@ -1,6 +1,6 @@
 // agg_top: the final proof over any number of leaves. Statement: ../pf_agg/src/lib.nr.
 //
-// Public inputs : threshold_cents, context, year, leaf_vk_hash, node_vk_hash, sorted_vk_hash
+// Public inputs : threshold_cents, context, year, leaf_keys_hash, node_vk_hash, sorted_vk_hash
 // Public outputs: (taxpayer key hash, authority key hash, starts at ordinal 1, number of invoices,
 //                 root of the opening tree, scope nullifier)
 
@@ -11,6 +11,7 @@ fn main(
     run_vk: UltraHonkVerificationKey,
     run_proof: UltraHonkZKProof,
     run_is_leaf: bool,
+    run_leaf_kind: u32,
     run_fields: [Field; 12],
     run_blind: Field,
     sorted_vk: UltraHonkVerificationKey,
@@ -20,10 +21,11 @@ fn main(
     sorted_blind: Field,
     taxpayer_key_hash: Field,
     issuer_key_hash: Field,
+    leaf_keys: [Field; 4],
     threshold_cents: pub u64,
     context: pub Field,
     year: pub u32,
-    leaf_vk_hash: pub Field,
+    leaf_keys_hash: pub Field,
     node_vk_hash: pub Field,
     sorted_vk_hash: pub Field,
 ) -> pub (Field, Field, bool, u32, Field, Field) {
@@ -31,6 +33,7 @@ fn main(
         run_vk,
         run_proof,
         run_is_leaf,
+        run_leaf_kind,
         run_fields,
         run_blind,
         sorted_vk,
@@ -40,10 +43,11 @@ fn main(
         sorted_blind,
         taxpayer_key_hash,
         issuer_key_hash,
+        leaf_keys,
         threshold_cents,
         context,
         year,
-        leaf_vk_hash,
+        leaf_keys_hash,
         node_vk_hash,
         sorted_vk_hash,
     )

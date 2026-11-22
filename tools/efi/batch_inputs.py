@@ -77,13 +77,15 @@ TAMPERS = (
 )
 
 
-def synthetic(k, tamper, start, threshold, large=None, inflate=None, shape=None, new_year=False):
+def synthetic(k, tamper, start, threshold, large=None, inflate=None, shape=None, new_year=False, lines=None):
     """k invented invoices. `large`: position of one invoice made far larger than the others
     (500,000.00 before tax), for tests of amount-weighted spot checks. `inflate`: position of one
     invoice that the taxpayer signs again showing 500,000.00 more than what was registered, keeping
     the registered identifiers; the circuits cannot see this, a spot check has to. `shape`: the
     requests are written in that shape (leaf_request_inputs.shaped). `new_year`: the invoices are
     issued from 00:10 on 1 January 2027 on the country's clock and their times written in UTC.
+    `lines`: for some positions, the number of lines of the invoice there ({position: lines}); an
+    invoice of one line takes about 1,700 bytes and every further line about 145.
 
     Every invoice carries, under "authority", what the tax authority would have on record for it."""
     rng = random.Random(secrets.randbits(64))
@@ -99,6 +101,8 @@ def synthetic(k, tamper, start, threshold, large=None, inflate=None, shape=None,
         c["net"] = 50_000_000 if n == large else rng.randrange(1000, 300000)
         c["vat"] = c["net"] * 21 // 100
         c["total"] = c["net"] + c["vat"]
+        if lines and n in lines:
+            c["lines"] = lines[n]
         if new_year or tamper == "written-year":
             c["issue"] = respell(f"2027-01-01T00:{10 + n:02d}:00+01:00", "Z")
         c = shaped(c, shape, n)

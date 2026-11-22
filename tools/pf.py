@@ -2,7 +2,7 @@
 """PRIVA-FISC command line: make a proof over a run of invoices, check one.
 
   pf.py prove  --out DIR --threshold EUR --year Y [--context HEX] [--keep FILE]  REQ1.xml RESP1.xml [REQ2.xml RESP2.xml ...]
-  pf.py prove  --out DIR --synthetic N [--keep FILE]      (invented invoices, for demos and tests)
+  pf.py prove  --out DIR --synthetic N [--lines L] [--keep FILE]      (invented invoices, for demos and tests)
   pf.py prove  --buyer TYPE:NUMBER --out DIR --threshold EUR --year Y --context HEX  REQ1.xml RESP1.xml [...]
   pf.py prove  --einvoices ANSWER.xml --buyer NUIS:NUMBER --out DIR --threshold ALL --context HEX
   pf.py verify DIR [--context HEX] [--ledger FILE] [--taxpayer-cert FILE] [--buyer TYPE:NUMBER]
@@ -15,15 +15,21 @@ and a readable statement. Witness files are deleted. With --keep it also writes,
 alone, the record needed to answer spot checks later (tools/efi/opening.py); without it the proof
 cannot be spot-checked afterwards.
 
-1 or 10 invoices give a batch proof (noir/batch_k1, noir/batch_k10), which publishes one nullifier
-and one opening commitment per invoice. Any other number, up to 4096, gives an aggregated proof
-(noir/agg_*, leaves of up to 10 invoices), which publishes one root for each instead.
+1 or 10 invoices whose requests are at most 2,048 canonical bytes long give a batch proof
+(noir/batch_k1, noir/batch_k10), which publishes one nullifier and one opening commitment per
+invoice. Any other number, up to 4096, gives an aggregated proof (noir/agg_*), which publishes
+one root for each instead; so do 1 or 10 invoices when one of them is longer. An aggregated
+proof is built from leaves, and the tool picks the leaf circuit by the length of the requests: a
+leaf holds up to 10 requests of up to 2,048 bytes, 5 of up to 8,192, 3 of up to 16,384 or 1 of up
+to 32,768 (an invoice of one line takes about 1,500 to 1,800 bytes, each further line about 110).
+A request longer than that cannot be proved.
 
 With --buyer the statement is another one: the 1 to 10 invoices given were all issued to that
 buyer (for example TIN:02345678, as the identifier stands in the invoices), none has a negative
 total, and their totals reach the threshold. They need not be consecutive. The proof (noir/debtor_k1,
 noir/debtor_k10) publishes a tag of the buyer instead of the buyer; `verify --buyer` recomputes the
-tag and refuses a proof about somebody else. Such proofs cannot be spot-checked with opening.py yet.
+tag and refuses a proof about somebody else. The requests of this statement may be up to 2,048
+bytes long; there is no circuit for longer ones yet.
 With --synthetic N (1 to 10) any word after --buyer will do: the buyer is invented and printed.
 
 `verify` runs on the verifier's machine. It does NOT trust a verification key supplied with the
@@ -95,7 +101,7 @@ import opening  # noqa: E402
 import poseidon2  # noqa: E402
 
 SIZES = (1, 10)   # batch circuits
-LEAF = 10         # leaf size of aggregated proofs
+FAMILY = "standard"   # leaf circuits of aggregated proofs (tools/efi/agg.py)
 NOT_PROVED = (
     "that the tax authority saw the CONTENT of these invoices: its signature covers the request "
     "UUID and the receipt code only. Ordinals, amounts, year, business unit and device are what "
@@ -180,6 +186,10 @@ def prove_one_buyer(a):
         for number, (req_path, resp_path) in enumerate(zip(a.files[0::2], a.files[1::2]), 1):
             doc, req_sig, tmod, fields, resp_sig, imod, fmt = read_pair(req_path, resp_path, number)
             fmts.add(fmt)
+            if len(doc) > batch_inputs.M:
+                sys.exit(f"no proof: invoice {number}: its request is {len(doc)} bytes, and the statement about one "
+                         f"buyer reads requests of up to {batch_inputs.M} (the statement about a consecutive run "
+                         "reads longer ones)")
             try:
                 found = buyer_reader.buyer_id(bytes(doc))
             except buyer_reader.BuyerError as e:
@@ -339,7 +349,8 @@ def prove(a):
         if not formats.by_name(a.format).has_batch_circuits:
             sys.exit(f"no proof: for the format of {formats.by_name(a.format).country} only the statement about one buyer (--buyer) is built")
         k = a.synthetic
-        invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(k, None, 1, None)
+        lines = {position: a.lines for position in range(k)} if a.lines else None
+        invoices, tmod, imod, threshold, context, year = batch_inputs.synthetic(k, None, 1, None, lines=lines)
         if a.context:
             context = agg.parse_context(a.context)
     else:
@@ -362,13 +373,21 @@ def prove(a):
         threshold = round(float(a.threshold) * 100)
         context = agg.parse_context(a.context)
         year = a.year
-    if k not in SIZES:
+    longest = max(len(i["doc"]) for i in invoices)
+    if k not in SIZES or longest > batch_inputs.M:
+        # Any number of invoices, and requests longer than the batch circuits read: leaves by
+        # length of request, joined into one proof.
+        if longest > agg.longest_request(FAMILY):
+            sys.exit(f"no proof: a request is {longest} bytes, the longest the circuits read is {agg.longest_request(FAMILY)}")
         os.makedirs(a.out, exist_ok=True)
         try:
-            agg.make_proof(LEAF, invoices, tmod, imod, threshold, context, year, a.out, keep=a.keep)
+            agg.make_proof(FAMILY, invoices, tmod, imod, threshold, context, year, a.out, keep=a.keep)
         except agg.StepFailed as e:
             sys.exit(f"no proof: {e}")
-        print(f"aggregated proof for {k} invoices written to {a.out} (proof, public_inputs, statement.json)")
+        print(f"aggregated proof for {k} invoice{'s' if k != 1 else ''} written to {a.out} (proof, public_inputs, statement.json)")
+        if k in SIZES:
+            print(f"  (aggregated, not a batch proof: a request is {longest} bytes, and the batch circuits read "
+                  f"up to {batch_inputs.M})")
         if a.keep:
             print(f"spot-check record written to {a.keep} - keep it private")
         return 0
@@ -445,12 +464,13 @@ def verify(a):
         nullifiers = st["nullifiers"]
         published = f"{k} nullifier(s), {k} opening commitment(s), a tag of the buyer"
     elif kind == "aggregate":
-        ok, st, problems, leaf_size = agg.verify(a.dir)
+        ok, st, problems, family = agg.verify(a.dir)
         if not ok:
             print("PROOF INVALID: " + "; ".join(problems))
             return 1
         k = st["invoice_count"]
-        circuit_line = f"agg_top over leaves of up to {leaf_size} (all verification keys derived locally)"
+        circuit_line = "agg_top over leaves by length of request (all verification keys derived locally)"
+        leaves_line = agg.describe(family)
         nullifiers = [st["scope_nullifier"]]
         published = "one scope nullifier, one root over the opening commitments"
     else:
@@ -468,6 +488,8 @@ def verify(a):
     issuer = keys.get(int(st["issuer_key_hash"], 16))
     print("PROOF VALID")
     print(f"  circuit                : {circuit_line}")
+    if kind == "aggregate":
+        print(f"  a leaf holds           : {leaves_line}")
     print(f"  format of the invoices : {fmt.country}" + ("" if fmt is formats.MONTENEGRO else f" - written against {fmt.basis}"))
     if stated:
         day = st["answer_day"]
@@ -591,6 +613,8 @@ def main():
     p.add_argument("--synthetic", type=int, metavar="N")
     p.add_argument("--format", default="me", choices=[f.name for f in formats.ALL],
                    help="with --synthetic: the country format of the invented invoices (default me)")
+    p.add_argument("--lines", type=int, metavar="L",
+                   help="with --synthetic: lines of each invented invoice (default 1; a request grows by about 145 bytes a line)")
     p.add_argument("--keep", metavar="FILE", help="write the spot-check record (private) to FILE")
     p.add_argument("--buyer", metavar="TYPE:NUMBER", help="prove that the invoices were all issued to this buyer, e.g. TIN:02345678")
     p.add_argument("--einvoices", metavar="ANSWER.xml", help="a signed answer of the Albanian e-invoice service listing e-invoices")

@@ -2,6 +2,7 @@
 """The command line on signed files, as a taxpayer and a verifier would use it.
 
   python3 tools/test_cli.py
+  python3 tools/test_cli.py --long    # invoices of many lines; proves a large leaf, a few minutes
 
 Writes an invented signed request and receipt to disk, proves from the files, and checks what
 `pf.py verify` prints and returns: for the right and for another context, with the taxpayer's
@@ -10,7 +11,12 @@ Then the same invoice as a statement about its buyer, and a spot check of that p
 Albanian format; an answer of the e-invoice service; and requests written the other ways the
 schema allows (times in UTC, the late-delivery mark, the first hour of a year). One invoice at a
 time, so only the 1-invoice circuits are used.
+
+With --long, only this: an invoice of 30 lines, whose request is too long for the batch circuit,
+is proved from its files as an aggregate of one leaf, verified and spot-checked; the statement
+about its buyer is refused with the reason; an invoice too long for any circuit is refused.
 """
+import argparse
 import json
 import os
 import random
@@ -22,7 +28,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "efi"))
-from efi_common import new_key  # noqa: E402
+from efi_common import canonical_without_signature, new_key  # noqa: E402
 from leaf_request_inputs import build_request, core_fields, receipt_time, respell, shaped, signed_xml  # noqa: E402
 from leaf_response_inputs import synthetic_soap  # noqa: E402
 
@@ -40,7 +46,64 @@ def tool(*args):
     return r.returncode, r.stdout + r.stderr
 
 
+def long_invoices():
+    """Invoices whose requests are longer than the batch circuits read, from files."""
+    rng = random.Random(secrets.randbits(64))
+    taxpayer, authority = new_key(), new_key()
+    failed = 0
+
+    def report(label, good, detail=""):
+        nonlocal failed
+        failed += not good
+        print(f"{'PASS' if good else 'FAIL'}  {label}" + (f"  [{detail}]" if detail and not good else ""), flush=True)
+
+    with tempfile.TemporaryDirectory() as d:
+        def pair(invoice, name):
+            paths = os.path.join(d, name + "_request.xml"), os.path.join(d, name + "_receipt.xml")
+            with open(paths[0], "wb") as f:
+                f.write(signed_xml(taxpayer, build_request(taxpayer, invoice, tricky=False)))
+            answer = (invoice["uuid"].encode(), receipt_time(invoice).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
+            with open(paths[1], "wb") as f:
+                f.write(synthetic_soap(authority, answer))
+            return paths
+
+        c = dict(core_fields(rng), ordinal=1, lines=30)
+        total = f"{c['total'] // 100}.{c['total'] % 100:02d}"
+        files = pair(c, "long")
+        size = len(canonical_without_signature(build_request(taxpayer, c, tricky=False)))
+        proof, record, shown = (os.path.join(d, n) for n in ("proof", "record.json", "shown.json"))
+        args = ("--threshold", total, "--year", str(c["year"]), "--context", "0x91", *files)
+        code, out = pf("prove", "--out", proof, "--keep", record, *args)
+        report(f"an invoice of 30 lines ({size} bytes): proved, as an aggregate of one leaf",
+               code == 0 and 2048 < size <= 8192 and "aggregated proof for 1 invoice" in out, out[-300:])
+        code, out = pf("verify", proof, "--context", "0x91", "--taxpayer-cert", files[0])
+        report("the proof is valid and says what its leaves hold (exit 2)",
+               code == 2 and "PROOF VALID" in out and "or 5 of up to 8,192" in out and "key matches the certificate" in out, out[-400:])
+        code, out = tool("reveal", "--record", record, "--index", "0", "--out", shown)
+        report("the taxpayer opens the invoice", code == 0 and os.path.exists(shown), out[-200:])
+        code, out = tool("check", "--opening", shown, "--proof", proof, "--first")
+        report("the opening matches the proof, as its first invoice", code == 0 and out.strip() == "MATCH", out[-200:])
+        code, out = tool("check", "--opening", shown, "--proof", proof, "--ordinal", "2")
+        report("asked for another ordinal, no match", code == 1 and out.strip() == "NO MATCH", out[-200:])
+        code, out = pf("prove", "--buyer", "TIN:12345678", "--out", os.path.join(d, "buyer"), *args)
+        report("the statement about its buyer is refused, with the reason",
+               code != 0 and "reads requests of up to 2048" in out and not os.path.exists(os.path.join(d, "buyer", "proof")), out[-300:])
+
+        huge = dict(core_fields(rng), ordinal=1, lines=240)
+        code, out = pf("prove", "--out", os.path.join(d, "huge"), "--threshold", "1.00", "--year", str(huge["year"]),
+                       "--context", "0x92", *pair(huge, "huge"))
+        report("an invoice of 240 lines is longer than any circuit reads: no proof",
+               code != 0 and "the longest the circuits read is 32768" in out and not os.path.exists(os.path.join(d, "huge", "proof")), out[-300:])
+
+    print("all cases behave as required" if not failed else f"{failed} case(s) WRONG")
+    return 1 if failed else 0
+
+
 def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--long", action="store_true", help="only the invoices of many lines")
+    if ap.parse_args().long:
+        return long_invoices()
     rng = random.Random(secrets.randbits(64))
     taxpayer, stranger, authority = new_key(), new_key(), new_key()
     c = core_fields(rng)

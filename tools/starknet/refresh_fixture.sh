@@ -55,7 +55,7 @@ python3 "$ROOT/tools/pf.py" prove --out "$WORK/batch" --threshold 1.00 --year "$
 gen pf_batch_k10_verifier "$ROOT/noir/batch_k10/target/batch_k10.json" PfBatchK10Verifier
 calldata pf_batch_k10_verifier "$WORK/batch" "$TESTS/proof_calldata.txt"
 
-python3 "$ROOT/tools/efi/agg.py" prove --k 10 --n 20 --synthetic --context "$CONTEXT" --out "$WORK/agg" >/dev/null
+python3 "$ROOT/tools/efi/agg.py" prove --n 20 --synthetic --context "$CONTEXT" --out "$WORK/agg" >/dev/null
 gen pf_agg_top_verifier "$ROOT/noir/agg_top/target/agg_top.json" PfAggTopVerifier
 calldata pf_agg_top_verifier "$WORK/agg" "$TESTS/agg_proof_calldata.txt"
 
