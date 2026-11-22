@@ -289,8 +289,16 @@ with the number of invoices. Nothing has been deployed to mainnet.
 ## Limits
 
 - The circuits read requests of up to 2,048 canonical bytes whose `<Invoice>` start tag fits in
-  1,280 bytes, with timestamps at offset +01:00 or +02:00. Anything else cannot be proved (it does
-  not produce a wrong proof).
+  1,280 bytes, with timestamps at offset +01:00 or +02:00 and without the late-delivery mark in
+  the header (`SubseqDelivType`). Anything else cannot be proved (it does not produce a wrong
+  proof). What this leaves out in practice: a request with one line takes 1,500 to 1,800 bytes
+  and each further line about 110, so an invoice of more than about four lines does not fit; and
+  the schema also allows times in UTC written with `Z`, which is what at least one open-source
+  library for the Montenegrin service (OpenMicroFiscal) writes, so invoices issued through it
+  are not read; one of the two invoice requests the administration itself prints as an example
+  was sent with the offset +00:00 and is not read either. Reading longer requests is a matter of cost: on the single-request circuit
+  (`noir/leaf_request_v0` with `MAX_DOC` changed) each further 2,048 bytes cost about 145,000
+  gates (285,139 gates at 2,048 bytes, 1,297,955 at 16,384).
 - Invoice type and corrective references are not read yet. The seller's tax number is not read
   from the invoice on purpose: it is a field the taxpayer writes, while the signing certificate
   carries the same identity vouched for by the certificate authority.
@@ -302,8 +310,10 @@ with the number of invoices. Nothing has been deployed to mainnet.
   the taxpayer or the invoicing software to keep these messages; the tax administration's
   functional specification (v4.2) asks the software for an electronic journal of invoices, not
   for the signed messages, while the administration's own system keeps every request it receives
-  in full. We have not yet confirmed with software vendors which products keep them. Where they
-  were not kept, nothing can be proved about past invoices.
+  in full. One open-source client, MonteFiskal (a preview that has not yet been run against the
+  service), is written to keep every signed request and response. We have not yet confirmed with
+  the vendors of commercial products which of those keep them. Where they were not kept,
+  nothing can be proved about past invoices.
 - The Albanian formats (registration messages, and the answer of the e-invoice service) were
   written against the published specifications alone; no real signed message of those services
   has been seen. For registration messages only the statement about one buyer is built.
@@ -320,6 +330,38 @@ with the number of invoices. Nothing has been deployed to mainnet.
 Everything in this repository is synthetic: invented invoices signed by throw-away keys. The one
 exception is the public certificate data of the EFI test signer in `registry/`. Real invoices,
 taxpayer certificates and private keys do not belong here.
+
+Four checks compare with material that is not kept here, and are skipped without it:
+
+- One real invoice, end to end. A request and its receipt, as registered with the tax
+  administration's test service on 13 Oct 2021, are recorded in a public notebook
+  (`Fiskalizacija.ipynb` in github.com/djordjen/ElektronskaFiskalizacijaPython, commit d68c890).
+  Both verify with the tools here, digest and signature. The receipt is signed with the key the
+  registry lists as `me-efi-test-2020`. `pf.py prove` makes a batch proof and a proof about the
+  buyer from the two files, and `pf.py verify` accepts them with exit status 2 (valid, not a
+  production key). The request is signed with a test certificate whose private key is public, so
+  the pair says nothing about any taxpayer. `tools/efi/test_real_pair.py`.
+- The invented Montenegrin requests and receipts are valid under the schema the tax
+  administration publishes at `https://efi.tax.gov.me/fs-v1/eficg-fiscalization-service.xsd`
+  (fetched 22 Nov 2026, SHA-256 `242c6571...1243a`): `tools/efi/test_schema.py`.
+- The request reader was run on the sixteen invoice requests in the test vectors of MonteFiskal,
+  an independent open-source client for the same service (commit c515962): this repository's
+  canonicalization gives the same bytes for all sixteen, all sixteen are valid under the schema
+  once signed, and the reader accepts fifteen (advance, corrective, credit note, summary,
+  periodic, foreign currency, vouchers among them). The sixteenth carries the late-delivery
+  mark, which is outside the limits above. `tools/efi/test_foreign_requests.py`.
+- The circuits rebuild the canonical `SignedInfo` from a fixed text around the digest instead of
+  parsing it. That text was compared with the four requests the tax administration prints in its
+  access instructions (v4.1) as successfully sent to its test service in October 2020, by two
+  senders with certificates of a registered certificate authority: it is identical in all four,
+  and the real signatures verify over it. One of the four, the registration of a device, is
+  printed in a form that still gives the signed bytes, and its digest matches as well. The four
+  follow the schema of 2020; the two invoices among them are printed in a form that no longer
+  gives the signed bytes. `tools/efi/test_real_requests.py`.
+
+Still missing: more than one real invoice (a run of consecutive real invoices and an aggregate of
+them have not been proved), a real request of another kind than the plain non-cash invoice
+above, and anything from the production service.
 
 ## License
 

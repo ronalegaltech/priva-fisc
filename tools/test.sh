@@ -11,6 +11,13 @@
 # proofs). `full` adds the 10-invoice circuits, the Starknet contracts against real proofs, the run
 # on a local Starknet network and the demonstration.
 #
+# Four steps compare with material that is not kept here and are skipped without it: the schema
+# the tax administration publishes (PF_EFI_XSD_DIR, see tools/efi/test_schema.py), the test vectors
+# of another implementation (PF_EFI_VECTORS_DIR, see tools/efi/test_foreign_requests.py), the
+# real requests printed in the administration's access instructions (PF_EFI_ACCESS_DOCX, see
+# tools/efi/test_real_requests.py) and one real request with its receipt from the test service
+# (PF_EFI_REAL_NOTEBOOK, see tools/efi/test_real_pair.py).
+#
 # Needs: nargo and Python with lxml and cryptography for everything; bb for the aggregation tests
 # and the demonstration; scarb, snforge and universal-sierra-compiler for the contract tests;
 # starknet-devnet and sncast for the local network run. Exit status 0 only if everything passed.
@@ -40,6 +47,10 @@ step "pf_efi unit tests"           in_dir noir/pf_efi nargo test
 step "python hash against circuits" python3 tools/efi/test_poseidon2.py
 step "authority receipt"           python3 tools/efi/test_leaf_response.py
 step "taxpayer request"            python3 tools/efi/test_leaf_request.py
+step "published schema (if given)" python3 tools/efi/test_schema.py
+step "another implementation (if given)" python3 tools/efi/test_foreign_requests.py
+step "real requests (if given)"    python3 tools/efi/test_real_requests.py
+step "one real pair (if given)"    python3 tools/efi/test_real_pair.py
 step "buyer named in a request"    python3 tools/efi/test_buyer.py
 step "1 invoice"                   python3 tools/efi/test_batch.py --k 1
 step "1 invoice to one buyer"      python3 tools/efi/test_debtor.py

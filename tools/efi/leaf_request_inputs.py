@@ -118,13 +118,19 @@ def build_request(key, c, tricky: bool, fmt=MONTENEGRO):
     etree.SubElement(req, EFI + "Header", UUID=c["uuid"], SendDateTime=c["issue"])
     inv = etree.SubElement(req, EFI + "Invoice")
     attrs = {
-        "TypeOfInv": "NONCASH", "InvType": "INVOICE", "IsSimplifiedInv": "false", "IssueDateTime": c["issue"],
+        "TypeOfInv": "NONCASH", "IssueDateTime": c["issue"],
         "InvNum": f'{c["bu"]}/{c["ordinal"]}/{c["year"]}/{c["tcr"]}', "InvOrdNum": str(c["ordinal"]),
         "TCRCode": c["tcr"], "IsIssuerInVAT": "true", "TotPriceWoVAT": money(c["net"]),
         "TotVATAmt": money(c["vat"]), "TotPrice": money(c["total"]), "OperatorCode": c["oper"],
         "BusinUnitCode": c["bu"], "SoftCode": c["soft"], "IIC": iic,
         "IICSignature": iic_signature.hex().upper(), "IsReverseCharge": "false",
     }
+    # One attribute differs between the two schemas: the Montenegrin one requires InvType and has no
+    # IsSimplifiedInv, the Albanian one requires IsSimplifiedInv and has no InvType.
+    if fmt.name == "al":
+        attrs["IsSimplifiedInv"] = "false"
+    else:
+        attrs["InvType"] = "INVOICE"
     if tricky:
         # Free text that looks like attributes and markup. Canonical XML escapes the quotes.
         attrs["Note"] = 'x > y " TotPrice="0.01" InvOrdNum="1" IIC="' + "0" * 32 + '" /><Invoice TotPrice="0.02"'
