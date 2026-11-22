@@ -3,8 +3,8 @@
 noir/debtor_al_k10 for the Albanian format): invoices one seller issued to one buyer, scattered
 among its other invoices.
 
-  synthetic(k, tamper=None, count=None, fmt=MONTENEGRO) -> everything a Prover file needs, plus
-  what a verifier should see come out.
+  synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None) -> everything a Prover file
+  needs, plus what a verifier should see come out.
 
 In a format where the device code is optional, every second invoice is written without one.
 
@@ -19,7 +19,8 @@ import buyer as buyer_reader
 import formats
 from efi_common import modulus_of, new_key
 from formats import MONTENEGRO
-from leaf_request_inputs import build_request, core_fields, ingest_xml as ingest_request, party_number, signed_xml
+from leaf_request_inputs import build_request, core_fields, ingest_xml as ingest_request, party_number, \
+    receipt_time, shaped, signed_xml
 from leaf_response_inputs import ingest_xml as ingest_response, synthetic_soap
 
 # Negative cases. Every one must be refused by the circuit. The altered invoice is the last one
@@ -56,10 +57,11 @@ def tampers(fmt=MONTENEGRO):
     return TAMPERS + (TAMPERS_DEVICE_REQUIRED if fmt.device_required else ()) + TAMPERS_ANY_FORMAT
 
 
-def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO):
+def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None):
     """k signed pairs of which the first `count` (default: all) are invoices to one buyer. Slots
     after `count` hold invoices to other buyers, one of them a credit note: a prover's filler,
-    which must not matter. Returns a dict."""
+    which must not matter. `shape`: the requests are written in that shape
+    (leaf_request_inputs.shaped). Returns a dict."""
     rng = random.Random(secrets.randbits(64))
     taxpayer, authority = new_key(), new_key()
     base = core_fields(rng, fmt)
@@ -98,6 +100,7 @@ def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO):
                 c["no_device"] = True
         c["vat"] = c["net"] * 21 // 100
         c["total"] = c["net"] + c["vat"]
+        c = shaped(c, shape, n)
         if n < count:
             total += c["total"]
 
@@ -105,9 +108,9 @@ def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO):
         req_fmt = other if (tamper == "other-format" and n == last) else fmt
         doc, req_sig, _ = ingest_request(signed_xml(req_key, build_request(req_key, c, tricky=False, fmt=req_fmt)))
 
-        resp_fields = (c["uuid"].encode(), c["issue"].encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
+        resp_fields = (c["uuid"].encode(), receipt_time(c).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
         if tamper == "old-receipt" and n == last:
-            resp_fields = (resp_fields[0], (str(c["year"] - 1) + c["issue"][4:]).encode()) + resp_fields[2:]
+            resp_fields = (resp_fields[0], (str(c["year"] - 1) + receipt_time(c)[4:]).encode()) + resp_fields[2:]
         if tamper == "broken-link" and n == last:
             resp_fields = (str(uuid.uuid4()).encode(),) + resp_fields[1:]
         resp_key = new_key() if (tamper == "forged-receipt" and n == last) else authority

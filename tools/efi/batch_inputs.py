@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Witness builder for the batch circuits (noir/batch_k1, noir/batch_k10).
 
-  synthetic --k K --out FILE [--tamper KIND] [--start N] [--threshold CENTS]
+  synthetic --k K --out FILE [--tamper KIND] [--start N] [--threshold CENTS] [--shape S] [--new-year]
         K consecutive invoices of one synthetic taxpayer, each with a receipt signed by a synthetic
         "authority" key. Repo-safe: throw-away keys, invented identifiers.
+        --shape writes the requests in another shape the schema allows (leaf_request_inputs.SHAPES,
+        or "mixed" for one after the other). --new-year issues them in the first hour of 1 January
+        2027 on the country's clock and writes the times in UTC, where it is still 31 December 2026.
   pairs --out FILE --threshold CENTS --year Y --context C  REQUEST.xml RESPONSE.xml [...]
         real request/response files, in ordinal order (one pair per invoice).
 
@@ -17,7 +20,8 @@ import sys
 import uuid
 
 from efi_common import modulus_of, new_key, redc_param, sign, signed_info, toml_limbs
-from leaf_request_inputs import EFI, build_request, core_fields, ingest_xml as ingest_request, money, signed_xml
+from leaf_request_inputs import EFI, SHAPES, build_request, core_fields, ingest_xml as ingest_request, money, \
+    receipt_time, respell, shaped, signed_xml
 from leaf_response_inputs import build_doc as build_response_doc, ingest_xml as ingest_response, synthetic_soap
 
 M = 2048  # must match `global M` in noir/batch_k*/src/main.nr
@@ -69,19 +73,24 @@ TAMPERS = (
     "forged-request",   # one request signed by a key that is not the taxpayer's
     "total-edit",       # an amount changed after signing
     "old-receipt",      # a receipt the authority dated in the previous year
+    "written-year",     # invoices of the first hour of a year, written in UTC, stated under the year as written
 )
 
 
-def synthetic(k, tamper, start, threshold, large=None, inflate=None):
+def synthetic(k, tamper, start, threshold, large=None, inflate=None, shape=None, new_year=False):
     """k invented invoices. `large`: position of one invoice made far larger than the others
     (500,000.00 before tax), for tests of amount-weighted spot checks. `inflate`: position of one
     invoice that the taxpayer signs again showing 500,000.00 more than what was registered, keeping
-    the registered identifiers; the circuits cannot see this, a spot check has to.
+    the registered identifiers; the circuits cannot see this, a spot check has to. `shape`: the
+    requests are written in that shape (leaf_request_inputs.shaped). `new_year`: the invoices are
+    issued from 00:10 on 1 January 2027 on the country's clock and their times written in UTC.
 
     Every invoice carries, under "authority", what the tax authority would have on record for it."""
     rng = random.Random(secrets.randbits(64))
     taxpayer, authority = new_key(), new_key()
     base = core_fields(rng)
+    if new_year or tamper == "written-year":
+        base["year"] = 2027
     invoices, total = [], 0
     for n in range(k):
         c = dict(base)
@@ -90,6 +99,9 @@ def synthetic(k, tamper, start, threshold, large=None, inflate=None):
         c["net"] = 50_000_000 if n == large else rng.randrange(1000, 300000)
         c["vat"] = c["net"] * 21 // 100
         c["total"] = c["net"] + c["vat"]
+        if new_year or tamper == "written-year":
+            c["issue"] = respell(f"2027-01-01T00:{10 + n:02d}:00+01:00", "Z")
+        c = shaped(c, shape, n)
         if tamper == "gap" and n == k - 1 and k > 1:
             c["ordinal"] += 1
         if tamper == "mixed-unit" and n == k - 1 and k > 1:
@@ -115,9 +127,9 @@ def synthetic(k, tamper, start, threshold, large=None, inflate=None):
                 request.find(EFI + "Invoice").set(name, registered.get(name))
         doc, req_sig, _ = ingest_request(signed_xml(req_key, request))
 
-        resp_fields = (c["uuid"].encode(), (c["issue"]).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
+        resp_fields = (c["uuid"].encode(), receipt_time(c).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
         if tamper == "old-receipt" and n == k - 1:
-            resp_fields = (resp_fields[0], (str(c["year"] - 1) + c["issue"][4:]).encode()) + resp_fields[2:]
+            resp_fields = (resp_fields[0], (str(c["year"] - 1) + receipt_time(c)[4:]).encode()) + resp_fields[2:]
         if tamper == "broken-link" and n == k - 1:
             resp_fields = (str(uuid.uuid4()).encode(),) + resp_fields[1:]
         resp_key = new_key() if (tamper == "forged-receipt" and n == k - 1) else authority
@@ -143,7 +155,7 @@ def synthetic(k, tamper, start, threshold, large=None, inflate=None):
         threshold = total // 2
     if tamper == "below-threshold":
         threshold = total + 1
-    year = base["year"] + (1 if tamper == "wrong-year" else 0)
+    year = base["year"] + (1 if tamper == "wrong-year" else 0) - (1 if tamper == "written-year" else 0)
     return invoices, modulus_of(taxpayer), modulus_of(authority), threshold, secrets.randbits(120), year
 
 
@@ -156,6 +168,8 @@ def main():
     s.add_argument("--tamper", choices=TAMPERS)
     s.add_argument("--start", type=int, default=1)
     s.add_argument("--threshold", type=int)
+    s.add_argument("--shape", choices=SHAPES + ("mixed",))
+    s.add_argument("--new-year", action="store_true")
     p = sub.add_parser("pairs")
     p.add_argument("--out", required=True)
     p.add_argument("--threshold", type=int, required=True)
@@ -165,7 +179,8 @@ def main():
     a = ap.parse_args()
 
     if a.cmd == "synthetic":
-        invoices, tmod, imod, threshold, context, year = synthetic(a.k, a.tamper, a.start, a.threshold)
+        invoices, tmod, imod, threshold, context, year = synthetic(a.k, a.tamper, a.start, a.threshold,
+                                                                   shape=a.shape, new_year=a.new_year)
         print(f"synthetic batch: {a.k} invoice(s), {'valid' if a.tamper is None else 'tampered (' + a.tamper + ')'}")
     else:
         if len(a.files) % 2:

@@ -8,8 +8,8 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | `pf_efi` | library | `request.nr` reads a taxpayer-signed `RegisterInvoiceRequest`; `buyer.nr` reads the buyer named in it; `response.nr` rebuilds the authority-signed `RegisterInvoiceResponse` (318 bytes in the Montenegrin format); `format.nr` holds what differs from one country to another (fixed text, and whether every invoice names a device); `einvoice.nr` reads an answer of the Albanian e-invoice service that lists e-invoices with their amounts and status; `batch.nr` is the statement over K invoices; `debtor.nr` is the statement over invoices issued to one buyer; `agg.nr` holds the aggregation method: runs of invoices, how two runs are joined, the sorted-list check; `spot.nr` locates one opened invoice under the root of an aggregate. |
 | `pf_agg` | library | The proofs above the leaves: a node verifies two proofs of adjacent runs, the top verifies the proof of the whole run and the sorted-list proof. |
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
-| `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (375,992 and 3,664,134 gates; about 4 s and 33 s with `pf.py prove --buyer`). |
-| `debtor_al_k1`, `debtor_al_k10` | circuit | The same statement for invoices in the Albanian format (see below). An invoice without a device code has device 0 in its opening commitment (380,004 and 3,702,745 gates). |
+| `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (381,165 and 3,717,548 gates; about 4 s and 33 s with `pf.py prove --buyer`). |
+| `debtor_al_k1`, `debtor_al_k10` | circuit | The same statement for invoices in the Albanian format (see below). An invoice without a device code has device 0 in its opening commitment (385,176 and 3,756,153 gates). |
 | `einvoice_al_k10` | circuit | Up to 10 open e-invoices of one seller to one buyer, read from ONE answer of Albania's e-invoice service in which the authority signs amount, parties and status of every e-invoice: number of e-invoices, buyer tag, seller tag, day of the answer, total at least a threshold (945,269 gates; about 10 s with `pf.py prove --einvoices`). Statement and limits in `pf_efi/src/einvoice.nr`. |
 | `agg_leaf_k1`, `agg_leaf_k10` | circuit | Aggregation leaf: checks its invoices (the 10-slot leaf may hold fewer), publishes a blinded commitment to the run. |
 | `agg_node` | circuit | Joins two adjacent runs, each proved by a leaf or by another node. |
@@ -34,22 +34,31 @@ character, and builds the only byte string it is willing to hash. If a proof exi
 signed exactly those fields. A canonicalization mistake outside the circuit can stop a proof from
 being made; it cannot make a false one.
 
-The request varies in length. Its header is matched against a fixed template, which puts the
-request identifier and the start of `<Invoice` at fixed offsets. The start tag is then scanned once,
+The request varies in length. Its header is matched byte for byte against the shapes a canonical
+header can take: the country's text, the time (20 characters when it ends in `Z`, 25 with an
+offset), optionally the late-delivery mark with one of its five words, the request identifier.
+Canonical XML writes attributes in the order of their names with one space before each, so there
+are no other shapes, nothing in the header is searched for, and an attribute written twice fits
+none of them. The `<Invoice>` start tag begins where the header ends. It is then scanned once,
 tracking "inside a quoted value" and "tag still open". An attribute counts only where ` Name="`
 starts outside a quoted value, and each wanted attribute must appear exactly once. Canonical XML
 never leaves a raw `"` inside a value, so text typed into a free-text field cannot pass for an
 attribute. Refused outside a value, because canonical XML never has them there and an XML parser
 could read them differently from this scan: a single quote, a tab or line break, and a namespace
-declaration on `<Invoice>`. The document must end with its two closing tags. Numbers and dates
-have one accepted form (no leading zeros, month, day and time in range, offset +01:00 or +02:00).
+declaration on `<Invoice>`. The document must end with its two closing tags. Numbers have one
+accepted form (no leading zeros, no zero with a minus sign). Times are read as the schema writes
+them, in UTC with `Z` or with any offset up to 14 hours, month, day and time of day in range. A
+time is committed to as written (its digits and how its zone is spelled); the year of an invoice
+is the year of that moment on the country's clock, which a time written in UTC does not show at
+the turn of the year.
 
 ## Country formats
 
 Every circuit that reads a request or a receipt is built for one format, a compile-time constant
 from `pf_efi/src/format.nr`: the canonical request up to the value of `SendDateTime`, the canonical
-response with zeros where its four values go, and whether every invoice names a device. The
-offsets the request reader uses follow from the length of that text. Each format therefore gives
+response with zeros where its four values go, whether every invoice names a device, and how far
+the country's clock is ahead of UTC at the turn of the year. Where the request reader looks
+follows from the length of that text and from how the header is written. Each format therefore gives
 its own circuit and its own verification key, and a document of one format is refused by a
 circuit of another (header template mismatch for a request, a signature that does not verify for
 a receipt).
@@ -138,15 +147,15 @@ Outside a circuit the tools compute Poseidon2 in Python (`tools/efi/poseidon2.py
 10-invoice circuits, the contracts and the local network run.
 
 ```sh
-(cd pf_xmldsig && nargo test)                  # 27
-(cd pf_efi && nargo test)                      # 39
+(cd pf_xmldsig && nargo test)                  # 39
+(cd pf_efi && nargo test)                      # 112
 python3 ../tools/efi/test_leaf_response.py     # 7 cases
-python3 ../tools/efi/test_leaf_request.py      # 14 cases
+python3 ../tools/efi/test_leaf_request.py      # 40 cases: 15 shapes the schema allows, 24 it does not or that were tampered with
 python3 ../tools/efi/test_replay.py            # 6 checks on an invoice signed again
-python3 ../tools/efi/test_batch.py --k 1       # 9 cases
-python3 ../tools/efi/test_batch.py --k 10      # 13 cases
-python3 ../tools/efi/test_opening.py           # 16 cases
-python3 ../tools/efi/test_poseidon2.py         # 13 checks of the Python hash against circuits
+python3 ../tools/efi/test_batch.py --k 1       # 17 cases
+python3 ../tools/efi/test_batch.py --k 10      # 16 cases
+python3 ../tools/efi/test_opening.py           # 23 cases
+python3 ../tools/efi/test_poseidon2.py         # 19 checks of the Python hash against circuits
 python3 ../tools/efi/test_agg.py               # 15 cases through proving, 19 spot checks
 python3 ../tools/efi/test_agg.py --k 10        # 8 cases (full and partly filled leaves), 34 spot checks
 ```
@@ -155,6 +164,7 @@ The aggregation tests always run the prover. Proofs inside a node or the top pro
 when that proof is made, not when its witness is generated, so a test that only executes the outer
 circuit shows nothing about what is inside.
 
-Compiling the 10-invoice circuits takes about four minutes each. They sit about 20% under 2^22
-gates; past that, proving time and memory double. Most of an invoice's cost is hashing the request
+Compiling the 10-invoice circuits takes about four minutes each. They sit 10% to 20% under 2^22
+gates (3,367,061 for the batch, 3,756,153 for the Albanian statement about one buyer); past that,
+proving time and memory double. Most of an invoice's cost is hashing the request
 (about 150,000 gates for 2,048 bytes) and the two RSA checks.

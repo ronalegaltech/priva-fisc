@@ -25,6 +25,16 @@ Not shown by this test: the other three requests (a cash deposit and two invoice
 a form that no longer gives the signed bytes, so the canonicalization of a real invoice request is
 still unconfirmed. The messages follow the schema of 2020, which differs from today's. There is no
 receipt among them.
+
+The content of the two invoice requests is also given to the request reader. Their own signatures
+cannot be used for that (the printed text is not the signed text), so each is signed again here
+with a throw-away key and run through noir/leaf_request_v0 (executed, not proved). Expected:
+  * the cash invoice, with its times at +02:00 and a device code, is read;
+  * the non-cash invoice, with its times at +00:00, is refused, and for one reason only: it
+    carries no device code. The schema of 2020 let a non-cash invoice go without one; the schema
+    published today makes the code mandatory, and the reader follows today's schema for
+    Montenegro. With an invented device code added to a copy, the same content is read, times
+    at +00:00 included.
 """
 import argparse
 import base64
@@ -33,6 +43,8 @@ import hashlib
 import html
 import os
 import re
+import secrets
+import subprocess
 import sys
 import zipfile
 
@@ -44,11 +56,32 @@ from lxml import etree
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from efi_common import NS, SI_HEAD, SI_MID, SI_TAIL  # noqa: E402
+from efi_common import NS, SI_HEAD, SI_MID, SI_TAIL, new_key  # noqa: E402
+from leaf_request_inputs import MAX_DOC, ingest_xml, signed_xml, write_prover  # noqa: E402
 
+PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "leaf_request_v0"))
 PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
 EXPECTED_MESSAGES = 4
+EXPECTED_INVOICES = 2
 FULLY_PRINTED = "RegisterTCRRequest"
+NO_DEVICE = "a required attribute is missing or repeated"
+
+
+def read_by_circuit(body, key):
+    """The request reader on this request content, signed here with `key`: (read, why not)."""
+    try:
+        doc, signature, modulus = ingest_xml(signed_xml(key, copy.deepcopy(body)))   # signing adds to its argument
+    except ValueError as e:
+        return False, f"refused before the circuit: {e}"
+    if len(doc) > MAX_DOC:
+        return False, f"{len(doc)} bytes, longer than this circuit reads"
+    write_prover(os.path.join(PKG, "ProverReal.toml"), doc, signature, modulus, secrets.randbits(248))
+    r = subprocess.run(["nargo", "execute", "-p", "ProverReal", "witness_real"], cwd=PKG, capture_output=True, text=True)
+    os.remove(os.path.join(PKG, "ProverReal.toml"))
+    err = r.stderr.strip()
+    if r.returncode != 0 and not any(k in err for k in ("Failed constraint", "Assertion failed", "Failed to solve")):
+        raise RuntimeError(f"nargo failed for a reason other than a circuit constraint:\n{err}")
+    return r.returncode == 0, next((l.strip() for l in err.splitlines() if "ssert" in l or "Failed" in l), "")
 
 
 def envelopes(docx_path):
@@ -83,6 +116,7 @@ def main():
         print(f"FAIL: {len(messages)} distinct requests in the document, expected {EXPECTED_MESSAGES}")
         failed += 1
 
+    invoices = []
     for text in messages:
         root = etree.fromstring(text.encode("utf-8"), PARSER)
         request = next(e for e in root.iter() if isinstance(e.tag, str) and e.tag.endswith("Request"))
@@ -102,6 +136,10 @@ def main():
         body = copy.deepcopy(request)
         body.remove(body.find("ds:Signature", NS))
         canonical = etree.tostring(body, method="c14n", exclusive=True)
+        if kind == "RegisterInvoiceRequest":
+            # Parsed again from its canonical bytes: the element then carries no namespace
+            # declarations of the envelope it was printed in.
+            invoices.append(etree.fromstring(canonical, PARSER))
         digest_matches = base64.b64encode(hashlib.sha256(canonical).digest()) == digest_value
 
         problems = []
@@ -115,6 +153,31 @@ def main():
         note = "digest of the request matches too" if digest_matches else "printed text does not give the signed bytes"
         print(f"{'FAIL' if problems else 'ok  '} {kind:27s} "
               + ("; ".join(problems) if problems else f"template identical, signature verifies; {note}"))
+
+    # The content of the invoice requests, signed again here, before the request reader.
+    if len(invoices) != EXPECTED_INVOICES:
+        print(f"FAIL: {len(invoices)} invoice requests in the document, expected {EXPECTED_INVOICES}")
+        failed += 1
+    if invoices:
+        subprocess.run(["nargo", "compile"], cwd=PKG, check=True, capture_output=True)
+    key = new_key()
+    for body in invoices:
+        invoice = next(e for e in body if etree.QName(e).localname == "Invoice")
+        has_device = invoice.get("TCRCode") is not None
+        zone = invoice.get("IssueDateTime", "")[19:]
+        read, why = read_by_circuit(body, key)
+        # Read exactly when it carries a device code; refused for the lack of one and nothing else.
+        ok = read == has_device and (read or NO_DEVICE in why)
+        failed += not ok
+        said = "read" if read else f"refused [{why[-70:]}]"
+        print(f"{'ok  ' if ok else 'FAIL'} invoice content signed again: times at {zone}, "
+              f"{'a' if has_device else 'no'} device code: {said}")
+        if not has_device:
+            invoice.set("TCRCode", "ab123cd456")
+            read, why = read_by_circuit(body, key)
+            failed += not read
+            print(f"{'ok  ' if read else 'FAIL'} the same with an invented device code added: "
+                  + ("read" if read else f"refused [{why[-70:]}]"))
 
     print(f"{len(messages)} real requests: " + ("all as expected" if not failed else f"{failed} wrong"))
     return 1 if failed else 0

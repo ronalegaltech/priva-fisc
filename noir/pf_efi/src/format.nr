@@ -3,7 +3,7 @@
 // The fiscalization systems read here (Montenegro, Albania) exchange the same two signed messages
 // and sign them the same way. What differs from one country to the other is fixed text (the address
 // of the schema, the version, how the response is spelled) and which invoice attributes are
-// mandatory. A `Format` holds exactly that and nothing else.
+// mandatory, and the clock the country keeps. A `Format` holds exactly that and nothing else.
 //
 // A circuit is built for one format: the value is a compile-time constant, so each format gives
 // its own circuit and its own verification key. A proof made for one format does not verify under
@@ -31,6 +31,9 @@ pub struct Format<let H: u32, let L: u32> {
     /// Whether every invoice names the device that issued it (TCRCode). Where it does not, an
     /// invoice without one has device 0.
     pub device_required: bool,
+    /// Minutes the country's clocks are ahead of UTC at the turn of the year. The year an invoice
+    /// belongs to is the year of its issue time on that clock, however the time is written.
+    pub new_year_clock: u32,
 }
 
 pub global MONTENEGRO: Format<112, 318> = Format {
@@ -43,6 +46,7 @@ pub global MONTENEGRO: Format<112, 318> = Format {
     at_response_uuid: 198,
     at_fic: 250,
     device_required: true,
+    new_year_clock: 60,
 };
 
 pub global ALBANIA: Format<142, 376> = Format {
@@ -55,6 +59,7 @@ pub global ALBANIA: Format<142, 376> = Format {
     at_response_uuid: 240,
     at_fic: 300,
     device_required: false,
+    new_year_clock: 60,
 };
 
 /// The answer of an e-invoice service to "get my e-invoices" (einvoice.nr): another message of

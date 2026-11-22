@@ -36,7 +36,7 @@ def expected(s, k):
         fic = int(v["fic"], 0)
         nullifiers[i] = poseidon2.hash([DOMAIN_NULLIFIER, s["context"], fic])
         openings[i] = poseidon2.hash([DOMAIN_OPENING_BUYER] + [int(v[name], 0) for name in (
-            "iic", "fic", "ordinal", "issue_local_ts", "issue_tz", "total_cents", "unit", "device")] + [s["buyer"], inv["salt"]])
+            "iic", "fic", "ordinal", "issue_ts", "issue_zone", "total_cents", "unit", "device")] + [s["buyer"], inv["salt"]])
     return [s["count"], poseidon2.hash([DOMAIN_BUYER, s["context"], s["buyer"]])] + nullifiers + openings
 
 
@@ -80,6 +80,17 @@ def main():
     report("all slots to one buyer", accepted and published == expected(s, k),
            f"accepted, {s['count']} invoice(s), published values recomputed" if accepted else f"rejected [{why}]")
 
+    # Requests in the other shapes the schema allows: times in UTC or with another offset, the
+    # late-delivery mark. What is published is recomputed from the files, so this also compares
+    # how the tools and the circuit take a time written each way.
+    for shape in (("utc-z", "offset-minus-zero", "west-of-utc", "late-businessneeds", "late-utc-z", "zero-total-plain")
+                  if k == 1 else ("mixed",)):
+        s = debtor_inputs.synthetic(k, fmt=fmt, shape=shape)
+        accepted, published, why = run(s)
+        report("shape " + shape, accepted and published == expected(s, k),
+               "accepted, published values recomputed" if accepted else f"rejected [{why}]")
+
+    s = debtor_inputs.synthetic(k, fmt=fmt)
     if k > 1:
         s = debtor_inputs.synthetic(k, count=3, fmt=fmt)
         accepted, published, why = run(s)

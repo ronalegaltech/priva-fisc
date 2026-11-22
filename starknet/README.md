@@ -32,6 +32,12 @@ cost of an aggregate does not depend on how many invoices it covers. Starknet do
 The same flow ran on the public test network (Starknet Sepolia) on 20 Nov 2026, with
 `tools/starknet/sepolia_demo.sh`. The invoices were invented and signed by throw-away keys.
 
+The addresses and transactions below belong to that run and to the circuits as they stood that
+day. The circuits have changed since (the request reader, 22 Nov 2026) and with them their
+verification keys: the verifiers deployed on Sepolia do not accept proofs made with today's
+circuits, and the verifier packages in this directory, generated from today's circuits, are not
+the ones deployed there. Nothing has been deployed to Sepolia again.
+
 | | Transaction | L2 gas | Fee |
 |---|---|---|---|
 | batch of 10 | `0x05bde60c82f855751e1075f829f7254cc1f7bdeabf6a0283754d8f44491c1085` | 865,198,560 | 24.2 STRK |

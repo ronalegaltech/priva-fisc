@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Accept/reject tests for noir/leaf_request_v0 on synthetic invoices.
 
-  * a valid request must execute;
+  * a valid request must execute, and so must one in each of the other shapes the schema allows
+    (times in UTC or with another offset, the late-delivery mark in the header, a total of zero);
   * a plain request and one stuffed with look-alike text, carrying the same invoice fields, must
     give identical circuit outputs (the reader was not fooled);
   * every tampered case must be refused by the circuit.
@@ -17,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "leaf_request_v0"))
 GEN = os.path.join(HERE, "leaf_request_inputs.py")
 sys.path.insert(0, HERE)
-from leaf_request_inputs import TAMPERS  # noqa: E402
+from leaf_request_inputs import SHAPES, TAMPERS  # noqa: E402
 
 
 def execute(name):
@@ -42,11 +43,16 @@ def main():
     def report(label, ok, detail=""):
         nonlocal failed
         failed += not ok
-        print(f"{'PASS' if ok else 'FAIL'}  {label:20s} {detail}")
+        print(f"{'PASS' if ok else 'FAIL'}  {label:26s} {detail}")
 
     gen("synthetic", "--out", os.path.join(PKG, "ProverTest.toml"))
     accepted, reason, _ = execute("ProverTest")
     report("valid", accepted, "accepted" if accepted else f"rejected [{reason}]")
+
+    for shape in SHAPES:
+        gen("synthetic", "--out", os.path.join(PKG, "ProverTest.toml"), "--shape", shape)
+        accepted, reason, _ = execute("ProverTest")
+        report("shape " + shape, accepted, "accepted" if accepted else f"rejected [{reason[-75:]}]")
 
     gen("pair", os.path.join(PKG, "ProverPlain.toml"), os.path.join(PKG, "ProverTricky.toml"))
     ok1, r1, out1 = execute("ProverPlain")

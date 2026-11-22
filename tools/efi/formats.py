@@ -2,7 +2,8 @@
 
 The fiscalization systems read here exchange the same two signed messages and sign them the same
 way. A format holds what differs from one country to the other: the address of the schema, the
-version, how the response is spelled, and whether every invoice names a device (TCRCode).
+version, how the response is spelled, whether every invoice names a device (TCRCode), and the
+clock the country keeps at the turn of the year.
 
   me  Montenegro. Written against the published schema and real messages of the tax
       administration's test environment.
@@ -20,6 +21,35 @@ from dataclasses import dataclass
 ZERO_UUID = b"00000000-0000-0000-0000-000000000000"
 ZERO_TIME = b"0000-00-00T00:00:00+00:00"
 
+# A date and time as the schema writes it (UTCSType): UTC as "Z", or an offset. The circuits read
+# the same spellings (noir/pf_xmldsig, parse_datetime_until_quote) and also check the ranges.
+TIME = rb'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2})'
+# The words of the late-delivery mark in a request header (SubseqDelivType), as in request.nr.
+LATE_DELIVERY = (b"NOINTERNET", b"BOUNDBOOK", b"SERVICE", b"TECHNICALERROR", b"BUSINESSNEEDS")
+
+
+class BadTime(ValueError):
+    pass
+
+
+def read_time(text: str):
+    """A time as written -> (digits YYYYMMDDhhmmss, zone code, minutes from UTC), with the checks
+    the circuits make. The zone code says how the zone is spelled: 10000 + hhmm for "+hh:mm",
+    20000 + hhmm for "-hh:mm", 30000 for "Z"."""
+    if not re.fullmatch(TIME.decode(), text):
+        raise BadTime("not a date and time with 'Z' or an offset")
+    month, day, hour, minute, second = (int(text[i:i + 2]) for i in (5, 8, 11, 14, 17))
+    if not (1 <= month <= 12 and 1 <= day <= 31 and hour <= 23 and minute <= 59 and second <= 59):
+        raise BadTime("month, day or time of day out of range")
+    digits = int(text[0:4] + text[5:7] + text[8:10] + text[11:13] + text[14:16] + text[17:19])
+    if text[19] == "Z":
+        return digits, 30000, 0
+    hh, mm = int(text[20:22]), int(text[23:25])
+    if not ((hh <= 13 and mm <= 59) or (hh == 14 and mm == 0)):
+        raise BadTime("offset out of range")
+    sign = -1 if text[19] == "-" else 1
+    return digits, (20000 if sign < 0 else 10000) + hh * 100 + mm, sign * (hh * 60 + mm)
+
 
 @dataclass(frozen=True)
 class Format:
@@ -35,6 +65,7 @@ class Format:
     country_code: str
     one_buyer_circuits: tuple   # circuit names by number of slots: ((1, name), (10, name))
     has_batch_circuits: bool    # the statements about a consecutive run are built for this format
+    new_year_clock: int = 60    # minutes the country's clocks are ahead of UTC at the turn of the year
 
     # --- request ---
     @property
@@ -44,13 +75,32 @@ class Format:
                 f'<Header SendDateTime="').encode()
 
     @property
-    def tag_start(self) -> int:
-        """Offset, in a canonical request, of the space right after `<Invoice`."""
-        return len(self.request_head) + 88
-
-    @property
     def header_re(self):
-        return re.compile(re.escape(self.request_head) + rb'[^"]{25}" UUID="[^"]{36}"></Header><Invoice ')
+        """The shapes a canonical header can take: the time, optionally the late-delivery mark,
+        the identifier. Canonical XML writes attributes in the order of their names."""
+        return re.compile(re.escape(self.request_head) + TIME + rb'"(?: SubseqDelivType="(?:'
+                          + b"|".join(LATE_DELIVERY) + rb')")? UUID="[^"]{36}"></Header><Invoice ')
+
+    def tag_start(self, doc: bytes) -> int:
+        """Offset, in this canonical request, of the space right after `<Invoice`. It depends on
+        how the header's time is written and on whether the header carries the late-delivery mark."""
+        m = self.header_re.match(doc)
+        if m is None:
+            raise UnknownFormat("the request header is not one this tool reads")
+        return m.end() - 1
+
+    def year_of(self, text: str) -> int:
+        """The year a time falls in on the country's clock at the turn of the year, as the
+        circuits take it (pf_xmldsig::date_on_clock): the year of an invoice is not the four
+        digits written when the time is written in UTC or with another offset."""
+        _, _, offset = read_time(text)
+        t = int(text[11:13]) * 60 + int(text[14:16]) + self.new_year_clock - offset
+        year = int(text[0:4])
+        if text[5:10] == "12-31" and t >= 1440:
+            return year + 1
+        if text[5:10] == "01-01" and t < 0:
+            return year - 1
+        return year
 
     # --- response ---
     def _response_parts(self):

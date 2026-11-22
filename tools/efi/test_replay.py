@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import batch_inputs  # noqa: E402
 from efi_common import modulus_of, new_key  # noqa: E402
-from leaf_request_inputs import EFI, build_request, core_fields, ingest_xml as ingest_request, signed_xml  # noqa: E402
+from leaf_request_inputs import EFI, build_request, core_fields, ingest_xml as ingest_request, receipt_time, signed_xml  # noqa: E402
 from leaf_response_inputs import ingest_xml as ingest_response, synthetic_soap  # noqa: E402
 
 PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "batch_k1"))
@@ -39,7 +39,7 @@ def main():
     context, salt = secrets.randbits(120), secrets.randbits(248)
 
     def receipt():
-        fields = (c["uuid"].encode(), c["issue"].encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
+        fields = (c["uuid"].encode(), receipt_time(c).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
         got, sig, _ = ingest_response(synthetic_soap(authority, fields))
         return got, sig
 

@@ -56,8 +56,8 @@ pub fn opening_commitment_with_buyer(
     iic: Field,
     fic: Field,
     ordinal: Field,
-    issue_local_ts: Field,
-    issue_tz: Field,
+    issue_ts: Field,
+    issue_zone: Field,
     total_cents: Field,
     unit: Field,
     device: Field,
@@ -66,7 +66,7 @@ pub fn opening_commitment_with_buyer(
 ) -> Field {
     Poseidon2::hash(
         [
-            DOMAIN_OPENING_BUYER, iic, fic, ordinal, issue_local_ts, issue_tz, total_cents, unit, device,
+            DOMAIN_OPENING_BUYER, iic, fic, ordinal, issue_ts, issue_zone, total_cents, unit, device,
             buyer, salt,
         ],
         11,
@@ -133,8 +133,8 @@ pub fn prove_debtor<let K: u32, let M: u32, let H: u32, let L: u32>(
                 req.iic,
                 resp.fic,
                 req.ordinal as Field,
-                req.issue_local_ts,
-                req.issue_tz,
+                req.issue_ts,
+                req.issue_zone,
                 req.total_cents as Field,
                 req.busin_unit_code,
                 req.tcr_code,

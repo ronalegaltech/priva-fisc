@@ -9,23 +9,22 @@ open-source client for the Montenegrin fiscalization service whose test vectors 
 bytes of the request element before signing, for many kinds of invoice. The vectors are not kept
 in this repository: copy the directory `test-vectors/xml` of that project somewhere and name it
 with --vectors or in PF_EFI_VECTORS_DIR. Without it the test is skipped and exits with 0. Last run
-against commit c515962 of that project (22 Nov 2026): sixteen invoice vectors.
+against commit c515962 of that project (22 Nov 2026): sixteen invoice vectors, one of them with the
+late-delivery mark in its header.
 
 For each invoice vector:
   * the bytes have the digest the vector states;
   * this repository's canonicalization gives the same bytes;
   * signed here with a throw-away key, the request is valid under the published schema (only
     when --xsd-dir or PF_EFI_XSD_DIR is given, see test_schema.py);
-  * the reader (noir/leaf_request_v0, executed, not proved) accepts it, unless the request is of
-    a shape the reader is documented not to read (README, "Limits"): a late-delivery mark in the
-    header, or a time not written with an offset. Those must be refused before the circuit.
+  * the reader (noir/leaf_request_v0, executed, not proved) accepts it. A request longer than
+    that circuit holds is reported and counted as not read.
 """
 import argparse
 import glob
 import hashlib
 import json
 import os
-import re
 import secrets
 import subprocess
 import sys
@@ -40,7 +39,6 @@ import test_schema  # noqa: E402
 
 PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "leaf_request_v0"))
 PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
-OUTSIDE = re.compile(rb'<Header [^>]*SubseqDelivType="|(SendDateTime|IssueDateTime)="[^"]*Z"')
 
 
 def execute(name):
@@ -72,7 +70,7 @@ def main():
     schema = test_schema.load_schema(a.xsd_dir) if a.xsd_dir else None
     subprocess.run(["nargo", "compile"], cwd=PKG, check=True, capture_output=True)
     key = new_key()
-    failed = accepted = outside = 0
+    failed = accepted = 0
 
     for v in vectors:
         raw = v["expected"]["unsignedXml"].encode("utf-8")
@@ -85,30 +83,27 @@ def main():
         signed = signed_xml(key, element)
         if schema is not None and not schema.validate(etree.fromstring(signed, PARSER)):
             problems.append("not valid under the published schema")
-        if OUTSIDE.search(raw):
-            outside += 1
-            try:
-                ingest_xml(signed)
-                problems.append("read although its shape is documented as not read")
-            except ValueError:
-                result = "outside the documented limits, refused"
-        else:
+        try:
             doc, signature, modulus = ingest_xml(signed)
-            if len(doc) > MAX_DOC:
-                problems.append(f"{len(doc)} bytes, longer than this circuit reads")
+        except ValueError as e:
+            doc = None
+            problems.append(f"not read [{e}]")
+        if doc is not None and len(doc) > MAX_DOC:
+            problems.append(f"{len(doc)} bytes, longer than this circuit reads")
+        elif doc is not None:
+            write_prover(os.path.join(PKG, "ProverForeign.toml"), doc, signature, modulus, secrets.randbits(248))
+            ok, reason = execute("ProverForeign")
+            if ok:
+                accepted += 1
+                marked = b" SubseqDelivType=" in doc[:400]
+                result = f"accepted ({len(doc)} bytes{', late-delivery mark' if marked else ''})"
             else:
-                write_prover(os.path.join(PKG, "ProverForeign.toml"), doc, signature, modulus, secrets.randbits(248))
-                ok, reason = execute("ProverForeign")
-                if ok:
-                    accepted += 1
-                    result = f"accepted ({len(doc)} bytes)"
-                else:
-                    problems.append(f"refused by the circuit [{reason[-80:]}]")
+                problems.append(f"refused by the circuit [{reason[-80:]}]")
         failed += bool(problems)
         print(f"{'FAIL' if problems else 'ok  '} {v['id']:34s} {'; '.join(problems) if problems else result}")
 
-    print(f"{len(vectors)} requests of another implementation: {accepted} read, {outside} outside the documented "
-          f"limits, {failed} wrong" + ("" if schema else " (schema not checked)"))
+    print(f"{len(vectors)} requests of another implementation: {accepted} read, {failed} wrong"
+          + ("" if schema else " (schema not checked)"))
     return 1 if failed else 0
 
 

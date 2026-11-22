@@ -5,10 +5,17 @@
 // the authority's signed response repeats (see response.nr).
 //
 // How fields are read without an XML parser:
-//   * The header is matched against a fixed canonical template, so UUID sits at a fixed offset and
-//     the <Invoice> start tag begins at a fixed offset. The template begins with the country's
-//     text (format.nr); the offsets follow from its length.
-//   * Inside that start tag a one-pass scan tracks "inside a quoted value" and "tag still open".
+//   * The header is matched byte for byte against the only shapes a canonical header can take.
+//     It begins with the country's text (format.nr), which ends where the value of SendDateTime
+//     begins. Then come the time, 20 characters when it ends in "Z" and 25 with an offset; its
+//     closing quote; optionally ` SubseqDelivType="` with one of the five words the schema has;
+//     then ` UUID="`, the 36 characters, and `"></Header><Invoice`. Canonical XML writes the
+//     attributes of an element in the order of their names with one space before each, so a
+//     header with these attributes has no other spelling, and nothing in it is searched for:
+//     every byte is either fixed text or a value checked character by character. An attribute
+//     written twice, or a word the schema does not have, matches none of the shapes.
+//   * The <Invoice> start tag begins where the header ends, which is one of twelve places. Inside
+//     that start tag a one-pass scan tracks "inside a quoted value" and "tag still open".
 //     An attribute is recognised only where ` Name="` begins outside any quoted value while the tag
 //     is open. Canonical XML never leaves a raw '"' inside a value, so text placed in a value cannot
 //     imitate an attribute. Each wanted attribute must occur exactly once.
@@ -20,30 +27,60 @@
 //   * The document must end with `</Invoice></RegisterInvoiceRequest>`.
 //   * The rest of the document (items, taxes, parties) is hashed and otherwise ignored.
 //
-// Known liveness limits: header without SubseqDelivType; SendDateTime/IssueDateTime with the
-// offset +01:00 or +02:00; document up to M bytes; <Invoice> start tag up to TAG_WINDOW bytes.
-// Not extracted: seller TIN, IICSignature, invoice type, corrective references.
+// Times. SendDateTime and IssueDateTime are read in every spelling the schema allows: UTC as "Z",
+// or any offset from -14:00 to +14:00. The issue time is kept as written (its digits and how its
+// zone is spelled), because that is what an opened invoice is compared by. The YEAR of an invoice
+// is not the four digits written: it is the year of that moment on the country's clock at the
+// turn of the year (format.nr). Software that writes UTC puts an invoice issued at half past
+// midnight on 1 January under 31 December of the year before; it still belongs to the new year,
+// whose numbering it opens.
+//
+// Known liveness limits: document up to M bytes; <Invoice> start tag up to TAG_WINDOW bytes.
+// Read and not used: the late-delivery mark (SubseqDelivType). Not extracted: seller TIN,
+// IICSignature, invoice type, corrective references.
 //
 // The device code (TCRCode) is mandatory in the Montenegrin format. In a format where it is not
 // (format.nr), it may occur once or not at all, and an invoice without one has device 0.
 
 use crate::format::{ALBANIA, Format, MONTENEGRO};
 use pf_xmldsig::{
-    parse_amount_until_quote, parse_datetime, parse_hex32, parse_registration_code,
-    parse_uint_until_quote, parse_uuid, signed_info_digest_request,
+    date_on_clock, parse_amount_until_quote, parse_datetime_until_quote, parse_hex32,
+    parse_registration_code, parse_uint_until_quote, parse_uuid, signed_info_digest_request,
 };
 
 pub global TAG_WINDOW: u32 = 1280;
+// The scan looks ahead by the longest pattern it searches for, 16 bytes.
+global TAG_READ: u32 = 1296;
 
-// --- Canonical header template: the format's text (H bytes, up to the SendDateTime value), the
-// 25 characters of SendDateTime, HDR_P1, the 36 characters of UUID, HDR_P2. The offsets below
-// count from the end of the format's text. ---
-global HDR_P1: [u8; 8] = "\" UUID=\"".as_bytes();
-global HDR_P2: [u8; 19] = "\"></Header><Invoice".as_bytes();
-global OFF_HDR_P1: u32 = 25;
-global OFF_UUID: u32 = 33;
-global OFF_HDR_P2: u32 = 69;
-global OFF_TAG: u32 = 88; // the space right after "<Invoice"
+// --- Canonical header, after the format's text and the time with its closing quote ---
+global HDR_SUBSEQ: [u8; 18] = " SubseqDelivType=\"".as_bytes();
+global HDR_UUID: [u8; 7] = " UUID=\"".as_bytes();
+global HDR_END: [u8; 19] = "\"></Header><Invoice".as_bytes();
+// What may follow the time: the longest late-delivery attribute (33 bytes), then ` UUID="`, the 36
+// characters, HDR_END and the space that begins the attributes of <Invoice>.
+global HDR_REST: u32 = 96;
+// From ` UUID="` to that space.
+global HDR_TAIL: u32 = 63;
+
+// The five values of SubseqDelivType, each with the quote that closes it.
+global SUBSEQ_WORDS: u32 = 5;
+global SUBSEQ_LEN: [u32; 5] = [11, 10, 8, 15, 14];
+global SUBSEQ: [[u8; 15]; 5] = [
+    fit("NOINTERNET\""),
+    fit("BOUNDBOOK\""),
+    fit("SERVICE\""),
+    fit("TECHNICALERROR\""),
+    fit("BUSINESSNEEDS\""),
+];
+
+fn fit<let N: u32>(word: str<N>) -> [u8; 15] {
+    let mut out: [u8; 15] = [0; 15];
+    let b = word.as_bytes();
+    for i in 0..N {
+        out[i] = b[i];
+    }
+    out
+}
 
 // The last 35 bytes of a canonical request once the enveloped signature is removed.
 global DOC_END: [u8; 35] = "</Invoice></RegisterInvoiceRequest>".as_bytes();
@@ -85,9 +122,12 @@ pub struct RequestFields {
     /// 0 where the invoice names no device (possible only in a format that allows it).
     pub tcr_code: Field,
     pub ordinal: u64,
+    /// The year the issue time falls in on the country's clock (see the note on times above).
     pub issue_year: u32,
-    pub issue_local_ts: Field,
-    pub issue_tz: Field,
+    /// IssueDateTime as written: its digits (YYYYMMDDhhmmss) and how its zone is spelled
+    /// (pf_xmldsig::DateTime).
+    pub issue_ts: Field,
+    pub issue_zone: Field,
     pub total_negative: bool,
     pub total_cents: u64,
     /// Index of the '>' closing the <Invoice ...> start tag. Callers must check it is inside the
@@ -103,21 +143,77 @@ fn read<let M: u32, let N: u32>(doc: [u8; M], start: u32) -> [u8; N] {
     out
 }
 
-/// One pass over the <Invoice ...> start tag. Returns, for each wanted attribute, the offset of the
-/// first byte of its value (the entry at A_XMLNS is unused), the offset of the '>' that closes the
-/// tag, and how many times the device code occurs (1, or 0 where the format allows it).
+/// The header, matched against its canonical shapes. Returns the request's UUID and the offset
+/// of the space right after `<Invoice`.
+fn read_header<let M: u32, let H: u32, let L: u32>(format: Format<H, L>, doc: [u8; M]) -> (Field, u32) {
+    for i in 0..H {
+        assert(doc[i] == format.request_head[i], "request: header template mismatch");
+    }
+    // SendDateTime and the quote that closes it.
+    let send = parse_datetime_until_quote(read(doc, H));
+
+    // What follows that quote, which sits 20 or 25 bytes after the format's text.
+    let short = send.len == 20;
+    let mut rest: [u8; HDR_REST] = [0; HDR_REST];
+    for j in 0..HDR_REST {
+        rest[j] = if short { doc[H + 21 + j] } else { doc[H + 26 + j] };
+    }
+
+    // Either the late-delivery mark with one of its five words, or nothing, before ` UUID="`.
+    let mut marked = true;
+    for j in 0..18 {
+        marked &= rest[j] == HDR_SUBSEQ[j];
+    }
+    let mut words: u32 = 0;
+    let mut skip: u32 = 0; // bytes the mark takes
+    for w in 0..SUBSEQ_WORDS {
+        let mut is_word = marked;
+        for j in 0..SUBSEQ_LEN[w] {
+            is_word &= rest[18 + j] == SUBSEQ[w][j];
+        }
+        words += is_word as u32;
+        skip += (is_word as u32) * (18 + SUBSEQ_LEN[w]);
+    }
+    // No word is the beginning of another once its closing quote is counted, so at most one fits.
+    assert(!marked | (words == 1), "request: SubseqDelivType is not a word the schema has");
+
+    let mut tail: [u8; HDR_TAIL] = [0; HDR_TAIL];
+    for j in 0..HDR_TAIL {
+        tail[j] = rest[skip + j];
+    }
+    for j in 0..7 {
+        assert(tail[j] == HDR_UUID[j], "request: header template mismatch");
+    }
+    let mut uuid_text: [u8; 36] = [0; 36];
+    for j in 0..36 {
+        uuid_text[j] = tail[7 + j];
+    }
+    for j in 0..19 {
+        assert(tail[43 + j] == HDR_END[j], "request: header template mismatch");
+    }
+    assert(tail[62] == 32, "request: '<Invoice' is not followed by an attribute");
+
+    (parse_uuid(uuid_text), H + send.len + 1 + skip + 62)
+}
+
+/// One pass over the <Invoice ...> start tag, `tag_start` being the space right after `<Invoice`.
+/// Returns, for each wanted attribute, the offset of the first byte of its value (the entry at
+/// A_XMLNS is unused), the offset of the '>' that closes the tag, and how many times the device
+/// code occurs (1, or 0 where the format allows it).
 fn scan_invoice_tag<let M: u32, let H: u32, let L: u32>(
     format: Format<H, L>,
     doc: [u8; M],
+    tag_start: u32,
 ) -> ([u32; 7], u32, Field) {
-    let tag_start = H + OFF_TAG;
-    assert(doc[tag_start] == 32, "request: '<Invoice' is not followed by an attribute");
+    // The tag begins at one of several places. Its bytes are fetched once; the scan then runs
+    // over the copy, at fixed positions.
+    let tag: [u8; TAG_READ] = read(doc, tag_start);
 
     let mut win: [Field; 7] = [0; 7];
     for a in 0..N_ATTR {
         let mut v: Field = 0;
         for j in 0..PAT_LEN[a] {
-            v = v * 256 + (doc[tag_start + j] as Field);
+            v = v * 256 + (tag[j] as Field);
         }
         win[a] = v;
     }
@@ -125,28 +221,27 @@ fn scan_invoice_tag<let M: u32, let H: u32, let L: u32>(
     let mut in_quote: Field = 0;
     let mut in_tag: Field = 1;
     let mut count: [Field; 7] = [0; 7];
-    let mut value_at: [Field; 7] = [0; 7];
-    let mut tag_end: Field = 0;
+    let mut value_at: [Field; 7] = [0; 7]; // counted from tag_start
+    let mut tag_end: Field = 0; // counted from tag_start
     let mut stray_single_quotes: Field = 0;
     let mut stray_whitespace: Field = 0;
 
     for k in 0..TAG_WINDOW {
-        let i = tag_start + k;
-        let c = doc[i] as Field;
-        let outside = in_tag * (1 - in_quote); // 1 iff byte i is tag-level text of the open tag
+        let c = tag[k] as Field;
+        let outside = in_tag * (1 - in_quote); // 1 iff byte k is tag-level text of the open tag
 
         for a in 0..N_ATTR {
             let hit = ((win[a] == PAT[a]) as Field) * outside;
             count[a] += hit;
-            value_at[a] += hit * ((i + PAT_LEN[a]) as Field);
-            win[a] = (win[a] - c * PAT_TOP[a]) * 256 + (doc[i + PAT_LEN[a]] as Field);
+            value_at[a] += hit * ((k + PAT_LEN[a]) as Field);
+            win[a] = (win[a] - c * PAT_TOP[a]) * 256 + (tag[k + PAT_LEN[a]] as Field);
         }
 
-        let is_quote = (doc[i] == 34) as Field;
-        stray_single_quotes += ((doc[i] == 39) as Field) * outside;
-        stray_whitespace += (((doc[i] == 9) | (doc[i] == 10) | (doc[i] == 13)) as Field) * outside;
-        let closes = ((doc[i] == 62) as Field) * outside;
-        tag_end += closes * (i as Field);
+        let is_quote = (tag[k] == 34) as Field;
+        stray_single_quotes += ((tag[k] == 39) as Field) * outside;
+        stray_whitespace += (((tag[k] == 9) | (tag[k] == 10) | (tag[k] == 13)) as Field) * outside;
+        let closes = ((tag[k] == 62) as Field) * outside;
+        tag_end += closes * (k as Field);
         in_tag -= closes;
         in_quote = in_quote + is_quote - 2 * in_quote * is_quote;
     }
@@ -160,33 +255,21 @@ fn scan_invoice_tag<let M: u32, let H: u32, let L: u32>(
             assert(count[a] == 0, "request: namespace declaration on <Invoice>");
         } else if (a == A_TCR) & !format.device_required {
             assert(count[a] * (count[a] - 1) == 0, "request: TCRCode is repeated");
-            offsets[a] = value_at[a] as u32;
+            offsets[a] = tag_start + (value_at[a] as u32);
         } else {
             assert(count[a] == 1, "request: a required attribute is missing or repeated");
-            offsets[a] = value_at[a] as u32;
+            offsets[a] = tag_start + (value_at[a] as u32);
         }
     }
-    (offsets, tag_end as u32, count[A_TCR])
+    (offsets, tag_start + (tag_end as u32), count[A_TCR])
 }
 
 pub fn extract_request_fields<let M: u32, let H: u32, let L: u32>(
     format: Format<H, L>,
     doc: [u8; M],
 ) -> RequestFields {
-    // Header: fixed template, so UUID and the start of <Invoice are at fixed offsets.
-    for i in 0..H {
-        assert(doc[i] == format.request_head[i], "request: header template mismatch");
-    }
-    for i in 0..8 {
-        assert(doc[H + OFF_HDR_P1 + i] == HDR_P1[i], "request: header template mismatch");
-    }
-    for i in 0..19 {
-        assert(doc[H + OFF_HDR_P2 + i] == HDR_P2[i], "request: header template mismatch");
-    }
-    let _ = parse_datetime(read(doc, H)); // constrains the 25 SendDateTime characters
-    let uuid = parse_uuid(read(doc, H + OFF_UUID));
-
-    let (at, tag_end, device_count) = scan_invoice_tag(format, doc);
+    let (uuid, tag_start) = read_header(format, doc);
+    let (at, tag_end, device_count) = scan_invoice_tag(format, doc, tag_start);
 
     // Fixed-length values must be followed by their closing quote.
     let busin_unit_code = parse_registration_code(read(doc, at[A_BU]));
@@ -200,14 +283,9 @@ pub fn extract_request_fields<let M: u32, let H: u32, let L: u32>(
     }
     let iic = parse_hex32(read(doc, at[A_IIC]));
     assert(doc[at[A_IIC] + 32] == 34, "request: IIC is not 32 characters");
-    let issue: [u8; 25] = read(doc, at[A_ISSUE]);
-    let (issue_local_ts, issue_tz) = parse_datetime(issue);
-    assert(doc[at[A_ISSUE] + 25] == 34, "request: IssueDateTime is not 25 characters");
-    // The four year characters were constrained to digits by parse_datetime.
-    let issue_year = ((issue[0] - 48) as u32) * 1000
-        + ((issue[1] - 48) as u32) * 100
-        + ((issue[2] - 48) as u32) * 10
-        + ((issue[3] - 48) as u32);
+    // The time ends at its closing quote, after 20 or 25 characters.
+    let issue = parse_datetime_until_quote(read(doc, at[A_ISSUE]));
+    let (issue_year, _) = date_on_clock(issue, format.new_year_clock);
 
     // Variable-length values end at their closing quote.
     let ordinal = parse_uint_until_quote::<11>(read(doc, at[A_ORD]));
@@ -220,8 +298,8 @@ pub fn extract_request_fields<let M: u32, let H: u32, let L: u32>(
         tcr_code,
         ordinal,
         issue_year,
-        issue_local_ts,
-        issue_tz,
+        issue_ts: issue.written,
+        issue_zone: issue.zone,
         total_negative,
         total_cents,
         tag_end,
@@ -299,8 +377,8 @@ fn test_reads_plain_invoice() {
     assert(f.iic == 0xff);
     assert(f.ordinal == 7);
     assert(f.issue_year == 2026);
-    assert(f.issue_local_ts == 20260314092653);
-    assert(f.issue_tz == 10100);
+    assert(f.issue_ts == 20260314092653);
+    assert(f.issue_zone == 10100);
     assert(!f.total_negative);
     assert(f.total_cents == 125000);
     assert(f.busin_unit_code == 0x61623132336364343536);
@@ -462,6 +540,318 @@ fn test_rejects_signed_length_ending_at_the_start_tag() {
     let after = " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" TCRCode=\"ef789gh012\" TotPrice=\"1.00\">";
     let len = doc_len_with(before.as_bytes().len(), after.as_bytes().len());
     let _ = request_fields_and_digest(MONTENEGRO, doc_with(before, after), len);
+}
+
+// --- Times in every spelling, and the late-delivery mark ---
+
+// Test helper: a Montenegrin request whose header is given from the value of SendDateTime on
+// (the header's length varies, so the pieces are joined at run time) and whose IssueDateTime is
+// `issue`. Returns the document and its signed length.
+fn doc_with_header<let N: u32, let I: u32>(header_rest: str<N>, issue: str<I>) -> ([u8; 2048], u32) {
+    let mut out: [u8; 2048] = [0; 2048];
+    let mut o: u32 = 0;
+    let head = MONTENEGRO.request_head;
+    for i in 0..112 {
+        out[i] = head[i];
+    }
+    o += 112;
+    let h = header_rest.as_bytes();
+    for i in 0..N {
+        out[o + i] = h[i];
+    }
+    o += N;
+    let a = " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\" InvOrdNum=\"7\" IssueDateTime=\""
+        .as_bytes();
+    for i in 0..a.len() {
+        out[o + i] = a[i];
+    }
+    o += a.len();
+    let t = issue.as_bytes();
+    for i in 0..I {
+        out[o + i] = t[i];
+    }
+    o += I;
+    let b = "\" TCRCode=\"ef789gh012\" TotPrice=\"1250.00\"><Items></Items></Invoice></RegisterInvoiceRequest>"
+        .as_bytes();
+    for i in 0..b.len() {
+        out[o + i] = b[i];
+    }
+    (out, o + b.len())
+}
+
+fn fields_with_header<let N: u32, let I: u32>(header_rest: str<N>, issue: str<I>) -> RequestFields {
+    let (doc, len) = doc_with_header(header_rest, issue);
+    let (f, _) = request_fields_and_digest(MONTENEGRO, doc, len);
+    f
+}
+
+#[test]
+fn test_reads_times_written_in_utc_with_z() {
+    let f = fields_with_header(
+        "2026-03-14T08:26:55Z\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T08:26:53Z",
+    );
+    assert(f.uuid == 0x00000000000040008000_0000000000aa);
+    assert(f.ordinal == 7);
+    assert(f.issue_year == 2026);
+    assert(f.issue_ts == 20260314082653);
+    assert(f.issue_zone == 30000);
+    assert(f.total_cents == 125000);
+    assert(f.tcr_code == 0x65663738396768303132);
+}
+
+#[test]
+fn test_reads_times_written_with_offset_zero() {
+    let f = fields_with_header(
+        "2026-03-14T08:26:55+00:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T08:26:53+00:00",
+    );
+    assert(f.issue_ts == 20260314082653);
+    assert(f.issue_zone == 10000);
+    assert(f.issue_year == 2026);
+}
+
+#[test]
+fn test_reads_times_written_west_of_utc() {
+    let f = fields_with_header(
+        "2026-03-14T03:26:55-05:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T03:56:53-04:30",
+    );
+    assert(f.issue_ts == 20260314035653);
+    assert(f.issue_zone == 20430);
+    assert(f.issue_year == 2026);
+}
+
+#[test]
+fn test_header_and_invoice_may_spell_their_times_differently() {
+    let f = fields_with_header(
+        "2026-03-14T08:26:55Z\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+    assert(f.issue_zone == 10100);
+    let g = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T08:26:53Z",
+    );
+    assert(g.issue_zone == 30000);
+    assert(g.uuid == f.uuid);
+}
+
+#[test]
+fn test_year_is_the_one_on_the_countrys_clock() {
+    // Half past midnight on 1 January 2027 in Podgorica, as software that writes UTC puts it.
+    let z = fields_with_header(
+        "2026-12-31T23:30:02Z\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-12-31T23:30:00Z",
+    );
+    assert(z.issue_year == 2027);
+    assert(z.issue_ts == 20261231233000); // kept as written
+    let p = fields_with_header(
+        "2026-12-31T23:30:02+00:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-12-31T23:30:00+00:00",
+    );
+    assert(p.issue_year == 2027);
+    // An hour earlier it is still 2026 there.
+    let before = fields_with_header(
+        "2026-12-31T22:30:02Z\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-12-31T22:30:00Z",
+    );
+    assert(before.issue_year == 2026);
+    // The same moment written on the country's own clock.
+    let local = fields_with_header(
+        "2027-01-01T00:30:02+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2027-01-01T00:30:00+01:00",
+    );
+    assert(local.issue_year == 2027);
+}
+
+#[test]
+fn test_reads_every_late_delivery_word() {
+    let a = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"NOINTERNET\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+    let b = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"BOUNDBOOK\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+    let c = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"SERVICE\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+    let d = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"TECHNICALERROR\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+    let e = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"BUSINESSNEEDS\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+    let plain = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+    // The mark changes where everything after it sits and nothing that is read.
+    for f in [a, b, c, d, e] {
+        assert(f.uuid == plain.uuid);
+        assert(f.iic == plain.iic);
+        assert(f.ordinal == plain.ordinal);
+        assert(f.issue_ts == plain.issue_ts);
+        assert(f.total_cents == plain.total_cents);
+        assert(f.busin_unit_code == plain.busin_unit_code);
+        assert(f.tcr_code == plain.tcr_code);
+    }
+    assert(a.tag_end == plain.tag_end + 29);
+    assert(d.tag_end == plain.tag_end + 33);
+}
+
+#[test]
+fn test_late_delivery_mark_after_a_utc_time() {
+    let f = fields_with_header(
+        "2026-03-14T08:26:55Z\" SubseqDelivType=\"TECHNICALERROR\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T08:26:53Z",
+    );
+    assert(f.uuid == 0x00000000000040008000_0000000000aa);
+    assert(f.ordinal == 7);
+    assert(f.issue_zone == 30000);
+}
+
+#[test(should_fail_with = "request: SubseqDelivType is not a word the schema has")]
+fn test_rejects_unknown_late_delivery_word() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"POWERCUT\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: SubseqDelivType is not a word the schema has")]
+fn test_rejects_late_delivery_word_with_a_tail() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"SERVICES\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: SubseqDelivType is not a word the schema has")]
+fn test_rejects_late_delivery_word_in_lower_case() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"service\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: SubseqDelivType is not a word the schema has")]
+fn test_rejects_empty_late_delivery_word() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: SubseqDelivType is not a word the schema has")]
+fn test_late_delivery_value_cannot_carry_a_second_identifier() {
+    // Text in the value that looks like the rest of a header, with another UUID.
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"SERVICE&quot; UUID=&quot;11111111-1111-4111-8111-111111111111\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: header template mismatch")]
+fn test_rejects_late_delivery_mark_written_twice() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" SubseqDelivType=\"SERVICE\" SubseqDelivType=\"SERVICE\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: header template mismatch")]
+fn test_rejects_identifier_written_twice() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"11111111-1111-4111-8111-111111111111\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: header template mismatch")]
+fn test_rejects_late_delivery_mark_after_the_identifier() {
+    // Not the canonical order of attributes.
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\" SubseqDelivType=\"SERVICE\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: header template mismatch")]
+fn test_rejects_another_attribute_in_the_header() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" Source=\"x\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "request: header template mismatch")]
+fn test_rejects_two_spaces_in_the_header() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\"  UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "datetime: expected '+', '-' or 'Z'")]
+fn test_rejects_send_time_without_zone() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "datetime: not closed after 'Z'")]
+fn test_rejects_send_time_with_text_after_z() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55Z0\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00",
+    );
+}
+
+#[test(should_fail_with = "datetime: expected '+', '-' or 'Z'")]
+fn test_rejects_issue_time_without_zone() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53",
+    );
+}
+
+#[test(should_fail_with = "datetime: expected '+', '-' or 'Z'")]
+fn test_rejects_issue_time_with_fraction() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53.5+01:00",
+    );
+}
+
+#[test(should_fail_with = "datetime: not closed after the offset")]
+fn test_rejects_issue_time_with_text_after_offset() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+01:00Z",
+    );
+}
+
+#[test(should_fail_with = "datetime: offset out of range")]
+fn test_rejects_issue_time_with_offset_of_15_hours() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14T09:26:53+15:00",
+    );
+}
+
+#[test(should_fail_with = "datetime: expected 'T'")]
+fn test_rejects_issue_time_with_a_space() {
+    let _ = fields_with_header(
+        "2026-03-14T09:26:55+01:00\" UUID=\"00000000-0000-4000-8000-0000000000aa\"></Header><Invoice",
+        "2026-03-14 09:26:53+01:00",
+    );
 }
 
 // --- The same reader under another format: Albania, where a non-cash invoice has no device code ---

@@ -52,8 +52,8 @@ pub fn opening_commitment(
     iic: Field,
     fic: Field,
     ordinal: Field,
-    issue_local_ts: Field,
-    issue_tz: Field,
+    issue_ts: Field,
+    issue_zone: Field,
     total_negative: Field,
     total_cents: Field,
     unit: Field,
@@ -62,7 +62,7 @@ pub fn opening_commitment(
 ) -> Field {
     Poseidon2::hash(
         [
-            DOMAIN_OPENING, iic, fic, ordinal, issue_local_ts, issue_tz, total_negative, total_cents,
+            DOMAIN_OPENING, iic, fic, ordinal, issue_ts, issue_zone, total_negative, total_cents,
             unit, device, salt,
         ],
         11,
@@ -198,8 +198,8 @@ pub fn check_invoices<let K: u32, let M: u32, let H: u32, let L: u32>(
                 req.iic,
                 resp.fic,
                 req.ordinal as Field,
-                req.issue_local_ts,
-                req.issue_tz,
+                req.issue_ts,
+                req.issue_zone,
                 req.total_negative as Field,
                 req.total_cents as Field,
                 req.busin_unit_code,

@@ -4,7 +4,8 @@
   python3 tools/efi/test_poseidon2.py
 
 Checks the permutation against the published test vector, the hash against a circuit for every
-input length from 0 to 10, and the opening commitment against the open_invoice circuit.
+input length from 0 to 10, and the opening commitment against the open_invoice circuit, for a
+time written in each way the schema allows.
 """
 import os
 import secrets
@@ -52,6 +53,15 @@ def main():
         "salt": hex(secrets.randbits(248)),
     }
     report("opening commitment equals the open_invoice circuit", opening.recompute(o) == opening.recompute_in_circuit(o))
+    # The time enters the commitment as written. One moment, spelled the ways the schema allows.
+    seen = {opening.recompute(o)}
+    for spelled in ("2026-03-09T13:05:59Z", "2026-03-09T13:05:59+00:00", "2026-03-09T13:05:59-00:00",
+                    "2026-03-09T08:35:59-04:30", "2026-03-09T18:50:59+05:45"):
+        other = dict(o, issue_date_time=spelled, total="0")
+        value = opening.recompute(other)
+        report(f"the same for a time ending in {spelled[19:]}", value == opening.recompute_in_circuit(other))
+        seen.add(value)
+    report("every spelling gives another commitment", len(seen) == 6)
 
     print("all cases behave as required" if not failed else f"{failed} case(s) WRONG")
     return 1 if failed else 0

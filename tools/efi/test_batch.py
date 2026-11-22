@@ -4,8 +4,9 @@
   python3 tools/efi/test_batch.py            # 1-invoice circuit (fast)
   python3 tools/efi/test_batch.py --k 10     # 10-invoice circuit
 
-Valid chains must execute (starting at ordinal 1 and elsewhere); every tampered chain must be
-refused by the circuit.
+Valid chains must execute (starting at ordinal 1 and elsewhere, with the requests written in the
+other shapes the schema allows, and with invoices of the first hour of a year written in UTC);
+every tampered chain must be refused by the circuit.
 """
 import argparse
 import os
@@ -46,7 +47,7 @@ def main():
         if accepted and starts:
             detail += f" (starts at ordinal 1: {starts.group(1)})"
         failed += not ok
-        print(f"{'PASS' if ok else 'FAIL'}  {label:18s} {detail}")
+        print(f"{'PASS' if ok else 'FAIL'}  {label:26s} {detail}")
         return starts.group(1) if (accepted and starts) else None
 
     s1 = run("valid from 1", True, "--start", "1")
@@ -54,6 +55,10 @@ def main():
     if (s1, s2) != ("true", "false"):
         failed += 1
         print("FAIL  starts-at-one flag is wrong")
+    for shape in (("utc-z", "offset-zero", "west-of-utc", "late-technicalerror", "late-utc-z", "zero-total-plain")
+                  if a.k == 1 else ("mixed",)):
+        run("shape " + shape, True, "--shape", shape)
+    run("new year, in UTC", True, "--new-year")
     for t in TAMPERS:
         if a.k == 1 and t in NEEDS_TWO:
             continue

@@ -28,7 +28,7 @@ fn main(
     assert_rsa_sha256(digest, signature, modulus, redc_param);
 
     let receipt_commitment = Poseidon2::hash(
-        [DOMAIN_RECEIPT, f.request_uuid, f.response_uuid, f.fic, f.send_local_ts, f.send_tz, salt],
+        [DOMAIN_RECEIPT, f.request_uuid, f.response_uuid, f.fic, f.send_ts, f.send_zone, salt],
         7,
     );
 

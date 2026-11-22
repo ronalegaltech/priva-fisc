@@ -5,7 +5,9 @@ Turns a taxpayer-signed EFI `RegisterInvoiceRequest` (bare, or inside a SOAP env
 Prover file of the leaf circuit. Sources:
 
   xml <file>            a request as sent to the CIS
-  synthetic             a freshly generated invoice signed by a throw-away RSA-2048 key (repo-safe)
+  synthetic             a freshly generated invoice signed by a throw-away RSA-2048 key (repo-safe);
+                        --shape writes it in one of the other shapes the schema allows (SHAPES),
+                        --tamper makes it one the circuit must refuse (TAMPERS)
   pair <out1> <out2>    two synthetic requests with the SAME invoice fields, key and salt: a plain
                         one and one stuffed with look-alike text. The circuit must return the same
                         outputs for both.
@@ -30,7 +32,6 @@ from formats import MONTENEGRO
 
 EFI = "{" + MONTENEGRO.namespace + "}"   # the Montenegrin element namespace, for the tools that edit such requests
 MAX_DOC = 4096       # must match noir/leaf_request_v0/src/main.nr (TAG_WINDOW matches noir/pf_efi/src/request.nr)
-TAG_START = MONTENEGRO.tag_start   # leaf_request_v0 is a Montenegrin circuit
 TAG_WINDOW = 1280
 # Invented parties, by format: seller name, buyer name, town, address.
 PARTIES = {
@@ -50,16 +51,16 @@ def write_prover(path, doc: bytes, signature: int, modulus: int, salt: int, doc_
 
 
 def precheck(doc: bytes):
-    """Readable errors for the v0 liveness limits (the circuit enforces all of this itself).
+    """Readable errors for what the reader does not take (the circuit enforces all of this itself).
     Returns the format the request is written in."""
     try:
         fmt = formats.of_request(doc)
+        tag_start = fmt.tag_start(doc)
     except formats.UnknownFormat:
-        fmt = None
-    if fmt is None or not fmt.header_re.match(doc):
-        raise ValueError("header does not match the v0 template (SubseqDelivType or 'Z' time zone?)")
-    if b">" not in re.sub(rb'"[^"]*"', b'""', doc[fmt.tag_start:fmt.tag_start + TAG_WINDOW]):
-        raise ValueError("<Invoice> start tag is longer than the v0 scan window")
+        raise ValueError("the request header is not one the reader takes (a format it does not know, a time "
+                         "not written as the schema says, or a late-delivery word the schema does not have)")
+    if b">" not in re.sub(rb'"[^"]*"', b'""', doc[tag_start:tag_start + TAG_WINDOW]):
+        raise ValueError("<Invoice> start tag is longer than the reader's scan window")
     return fmt
 
 
@@ -100,28 +101,90 @@ def core_fields(rng, fmt=MONTENEGRO):
 
 
 def money(cents: int) -> str:
-    return f"{cents // 100}.{cents % 100:02d}"
+    sign, cents = ("-", -cents) if cents < 0 else ("", cents)
+    return f"{sign}{cents // 100}.{cents % 100:02d}"
+
+
+def respell(time: str, zone: str) -> str:
+    """The same moment as `time`, written in another zone: "Z", or an offset such as "-05:00"."""
+    moment = datetime.datetime.fromisoformat(time.replace("Z", "+00:00"))
+    if zone == "Z":
+        return moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sign = -1 if zone[0] == "-" else 1
+    tz = datetime.timezone(sign * datetime.timedelta(hours=int(zone[1:3]), minutes=int(zone[4:6])))
+    return moment.astimezone(tz).strftime("%Y-%m-%dT%H:%M:%S") + zone
+
+
+def receipt_time(c) -> str:
+    """The time an invented receipt carries: the invoice's own moment, on the country's clock. The
+    receipt reader takes a time written with an offset only (noir/pf_efi/src/response.nr)."""
+    return respell(c["issue"], "+01:00")
+
+
+# Shapes of request the schema allows besides the plain one: the zone of the times spelled another
+# way, the late-delivery mark in the header, a total of zero. The reader must take every one.
+SHAPES = (
+    "utc-z",                # both times in UTC, written with Z
+    "offset-zero",          # both times in UTC, written +00:00
+    "offset-minus-zero",    # the same, written -00:00
+    "west-of-utc",          # written with a negative offset
+    "quarter-hour-offset",  # an offset that is not a whole hour
+    "send-z-issue-offset",  # the header in UTC with Z, the invoice with an offset
+    "late-nointernet", "late-boundbook", "late-service", "late-technicalerror", "late-businessneeds",
+    "late-utc-z",           # the late-delivery mark after a time written with Z
+    "zero-total",           # a total of zero, written 0.00
+    "zero-total-plain",     # the same, written 0 (the schema allows both)
+)
+
+
+def shaped(c, shape, position=0):
+    """The invoice `c` written in one of SHAPES. "mixed" takes the shapes that leave the amount
+    alone in turn, by the invoice's position in a run; None leaves the invoice as it is."""
+    c = dict(c)
+    if shape is None:
+        return c
+    if shape == "mixed":
+        turn = [s for s in SHAPES if not s.startswith("zero-total")]
+        shape = turn[position % len(turn)]
+    zone = {"utc-z": "Z", "late-utc-z": "Z", "offset-zero": "+00:00", "offset-minus-zero": "-00:00",
+            "west-of-utc": "-05:00", "quarter-hour-offset": "+05:45"}.get(shape)
+    if zone:
+        c["issue"] = respell(c["issue"], zone)
+    if shape == "send-z-issue-offset":
+        c["send"] = respell(c["issue"], "Z")
+    if shape.startswith("late-"):
+        c["late"] = "TECHNICALERROR" if shape == "late-utc-z" else shape[5:].upper()
+    if shape.startswith("zero-total"):
+        c["net"] = c["vat"] = c["total"] = 0
+        c["plain_zero"] = shape == "zero-total-plain"
+    return c
 
 
 def build_request(key, c, tricky: bool, fmt=MONTENEGRO):
     """Unsigned request element, written in a NON-canonical attribute order on purpose.
     c["no_device"]: an invoice without a device code, numbered the way the Albanian specification
-    numbers non-cash invoices."""
+    numbers non-cash invoices. c["send"]: the header's time, when it is not the issue time.
+    c["late"]: a late-delivery word for the header. c["plain_zero"]: amounts of zero written 0."""
+    def amount(cents):
+        return "0" if (cents == 0 and c.get("plain_zero")) else money(cents)
+
     EFI = "{" + fmt.namespace + "}"
     seller_name, default_buyer_name, town, address = PARTIES[fmt.name]
     device = "" if c.get("no_device") else c["tcr"]
-    ikof_input = "|".join([c["tin"], c["issue"], str(c["ordinal"]), c["bu"], device, c["soft"], money(c["total"])])
+    ikof_input = "|".join([c["tin"], c["issue"], str(c["ordinal"]), c["bu"], device, c["soft"], amount(c["total"])])
     iic_signature = sign(key, ikof_input.encode())
     iic = hashlib.md5(iic_signature).hexdigest().upper()
 
     req = etree.Element(EFI + "RegisterInvoiceRequest", nsmap={None: fmt.namespace}, Id="Request", Version=fmt.version)
-    etree.SubElement(req, EFI + "Header", UUID=c["uuid"], SendDateTime=c["issue"])
+    header = etree.SubElement(req, EFI + "Header", UUID=c["uuid"], SendDateTime=c.get("send", c["issue"]))
+    if c.get("late"):
+        header.set("SubseqDelivType", c["late"])
     inv = etree.SubElement(req, EFI + "Invoice")
     attrs = {
         "TypeOfInv": "NONCASH", "IssueDateTime": c["issue"],
         "InvNum": f'{c["bu"]}/{c["ordinal"]}/{c["year"]}/{c["tcr"]}', "InvOrdNum": str(c["ordinal"]),
-        "TCRCode": c["tcr"], "IsIssuerInVAT": "true", "TotPriceWoVAT": money(c["net"]),
-        "TotVATAmt": money(c["vat"]), "TotPrice": money(c["total"]), "OperatorCode": c["oper"],
+        "TCRCode": c["tcr"], "IsIssuerInVAT": "true", "TotPriceWoVAT": amount(c["net"]),
+        "TotVATAmt": amount(c["vat"]), "TotPrice": amount(c["total"]), "OperatorCode": c["oper"],
         "BusinUnitCode": c["bu"], "SoftCode": c["soft"], "IIC": iic,
         "IICSignature": iic_signature.hex().upper(), "IsReverseCharge": "false",
     }
@@ -141,7 +204,7 @@ def build_request(key, c, tricky: bool, fmt=MONTENEGRO):
     for k, v in attrs.items():
         inv.set(k, v)
     pm = etree.SubElement(inv, EFI + "PayMethods")
-    etree.SubElement(pm, EFI + "PayMethod", Type="ACCOUNT", Amt=money(c["total"]))
+    etree.SubElement(pm, EFI + "PayMethod", Type="ACCOUNT", Amt=amount(c["total"]))
     etree.SubElement(inv, EFI + "Seller", IDType=fmt.party_id_type, IDNum=c["tin"], Name=seller_name,
                      Address=address, Town=town, Country=fmt.country_code)
     buyer_name = 'Kupac "A&B" > d.o.o.' if tricky else default_buyer_name
@@ -152,12 +215,12 @@ def build_request(key, c, tricky: bool, fmt=MONTENEGRO):
     items = etree.SubElement(inv, EFI + "Items")
     names = ['Usluga TotPrice="9.99"', 'Stavka > InvOrdNum="3"'] if tricky else ["Pravna usluga"]
     for n in names:
-        etree.SubElement(items, EFI + "I", N=n, C="1", U="kom", Q="1.00", UPB=money(c["net"]),
-                         UPA=money(c["total"]), R="0.00", RR="false", PB=money(c["net"]), VR="21.00",
-                         VA=money(c["vat"]), PA=money(c["total"]))
+        etree.SubElement(items, EFI + "I", N=n, C="1", U="kom", Q="1.00", UPB=amount(c["net"]),
+                         UPA=amount(c["total"]), R="0.00", RR="false", PB=amount(c["net"]), VR="21.00",
+                         VA=amount(c["vat"]), PA=amount(c["total"]))
     st = etree.SubElement(inv, EFI + "SameTaxes")
-    etree.SubElement(st, EFI + "SameTax", NumOfItems=str(len(names)), PriceBefVAT=money(c["net"]),
-                     VATRate="21.00", VATAmt=money(c["vat"]))
+    etree.SubElement(st, EFI + "SameTax", NumOfItems=str(len(names)), PriceBefVAT=amount(c["net"]),
+                     VATRate="21.00", VATAmt=amount(c["vat"]))
     return req
 
 
@@ -170,18 +233,30 @@ def signed_xml(key, req) -> bytes:
 # refuse; the others are forgeries by the prover.
 TAMPERS = ("total-flip", "sig-flip", "wrong-key", "signed-dup-total", "signed-no-ordinal",
            "signed-bad-amount", "signed-truncated", "signed-cut-after-tag", "signed-namespace",
-           "signed-tab-total", "signed-leading-zero", "signed-other-offset")
+           "signed-tab-total", "signed-leading-zero", "signed-negative-zero",
+           # times the schema does not allow
+           "signed-offset-too-large", "signed-no-zone", "signed-lowercase-z", "signed-fraction",
+           "signed-space-for-t", "signed-send-no-zone", "signed-send-z-then-text",
+           # headers that are not one of the canonical shapes
+           "signed-unknown-late", "signed-late-twice", "signed-late-after-uuid", "signed-uuid-twice",
+           "signed-late-smuggles-uuid")
 
 
-def synthetic(tamper, rng):
+def synthetic(tamper, rng, shape=None):
     key = new_key()
     c = core_fields(rng)
+    if shape is not None:
+        c = shaped(c, shape)
     if tamper is None:
         return ingest_xml(signed_xml(key, build_request(key, c, tricky=False))) + (None,)
 
     doc = canonical_without_signature(build_request(key, c, tricky=False))
-    tag_end = TAG_START + re.sub(rb'"[^"]*"', lambda m: b'"' + b"x" * (len(m.group(0)) - 2) + b'"',
-                                 doc[TAG_START:]).index(b">")
+    tag_start = MONTENEGRO.tag_start(doc)   # leaf_request_v0 is a Montenegrin circuit
+    tag_end = tag_start + re.sub(rb'"[^"]*"', lambda m: b'"' + b"x" * (len(m.group(0)) - 2) + b'"',
+                                 doc[tag_start:]).index(b">")
+    issue = rb'( IssueDateTime="[^"]{19})\+01:00"'
+    sent = rb'(<Header SendDateTime="[^"]{19})\+01:00"'
+    other_uuid = str(uuid.UUID(int=rng.getrandbits(128), version=4)).encode()
     signed_doc, doc_len = doc, None
     if tamper == "signed-dup-total":
         signed_doc = doc[:tag_end] + b' TotPrice="0.01"' + doc[tag_end:]
@@ -190,7 +265,7 @@ def synthetic(tamper, rng):
     elif tamper == "signed-bad-amount":
         signed_doc = re.sub(rb' TotPrice="(\d+)\.(\d\d)"', rb' TotPrice="\1,\2"', doc, count=1)
     elif tamper == "signed-truncated":
-        signed_doc, doc_len = doc[:TAG_START + 300], TAG_START + 300  # signature covers a prefix only
+        signed_doc, doc_len = doc[:tag_start + 300], tag_start + 300  # signature covers a prefix only
     elif tamper == "signed-cut-after-tag":
         signed_doc, doc_len = doc[:tag_end + 1], tag_end + 1  # the start tag and nothing after it
     elif tamper == "signed-namespace":
@@ -199,8 +274,34 @@ def synthetic(tamper, rng):
         signed_doc = doc[:tag_end] + b'\tTotPrice="0.01"' + doc[tag_end:]  # a parser sees two totals
     elif tamper == "signed-leading-zero":
         signed_doc = re.sub(rb' TotPrice="', b' TotPrice="0', doc, count=1)
-    elif tamper == "signed-other-offset":
-        signed_doc = re.sub(rb'( IssueDateTime="[^"]{19})\+01:00', rb"\1+13:00", doc, count=1)
+    elif tamper == "signed-negative-zero":
+        signed_doc = re.sub(rb' TotPrice="[^"]*"', b' TotPrice="-0.00"', doc, count=1)
+    elif tamper == "signed-offset-too-large":
+        signed_doc = re.sub(issue, rb'\1+15:00"', doc, count=1)
+    elif tamper == "signed-no-zone":
+        signed_doc = re.sub(issue, rb'\1"', doc, count=1)
+    elif tamper == "signed-lowercase-z":
+        signed_doc = re.sub(issue, rb'\1z"', doc, count=1)
+    elif tamper == "signed-fraction":
+        signed_doc = re.sub(issue, rb'\1.5+01:00"', doc, count=1)
+    elif tamper == "signed-space-for-t":
+        signed_doc = re.sub(rb'( IssueDateTime="[^"]{10})T', rb"\1 ", doc, count=1)
+    elif tamper == "signed-send-no-zone":
+        signed_doc = re.sub(sent, rb'\1"', doc, count=1)
+    elif tamper == "signed-send-z-then-text":
+        signed_doc = re.sub(sent, rb'\1Z+01:00"', doc, count=1)
+    elif tamper == "signed-unknown-late":
+        signed_doc = doc.replace(b'" UUID="', b'" SubseqDelivType="POWERCUT" UUID="', 1)
+    elif tamper == "signed-late-twice":
+        signed_doc = doc.replace(b'" UUID="', b'" SubseqDelivType="SERVICE" SubseqDelivType="SERVICE" UUID="', 1)
+    elif tamper == "signed-late-after-uuid":
+        signed_doc = doc.replace(b'"></Header>', b'" SubseqDelivType="SERVICE"></Header>', 1)
+    elif tamper == "signed-uuid-twice":
+        signed_doc = doc.replace(b'" UUID="', b'" UUID="' + other_uuid + b'" UUID="', 1)
+    elif tamper == "signed-late-smuggles-uuid":
+        # Text in the mark's value that reads like the rest of a header carrying another identifier.
+        signed_doc = doc.replace(b'" UUID="', b'" SubseqDelivType="SERVICE&quot; UUID=&quot;' + other_uuid + b'" UUID="', 1)
+    assert tamper in ("total-flip", "sig-flip", "wrong-key", "signed-truncated", "signed-cut-after-tag") or signed_doc != doc, tamper
     signature = int.from_bytes(sign(key, signed_info(b"Request", signed_doc)), "big")
     modulus = modulus_of(key)
 
@@ -225,6 +326,7 @@ def main():
     s = sub.add_parser("synthetic")
     s.add_argument("--out", required=True)
     s.add_argument("--tamper", choices=TAMPERS)
+    s.add_argument("--shape", choices=SHAPES)
     p = sub.add_parser("pair")
     p.add_argument("out_plain")
     p.add_argument("out_tricky")
@@ -238,9 +340,10 @@ def main():
         write_prover(a.out, doc, signature, modulus, secrets.randbits(248))
         print(f"wrote {a.out}")
     elif a.cmd == "synthetic":
-        doc, signature, modulus, doc_len = synthetic(a.tamper, rng)
+        doc, signature, modulus, doc_len = synthetic(a.tamper, rng, a.shape)
         write_prover(a.out, doc, signature, modulus, secrets.randbits(248), doc_len)
-        print(f"synthetic: {'valid' if a.tamper is None else 'tampered (' + a.tamper + ')'}, {len(doc)} bytes")
+        print(f"synthetic: {'valid' if a.tamper is None else 'tampered (' + a.tamper + ')'}"
+              f"{', shape ' + a.shape if a.shape else ''}, {len(doc)} bytes")
         print(f"wrote {a.out}")
     else:
         key, c, salt = new_key(), core_fields(rng), secrets.randbits(248)

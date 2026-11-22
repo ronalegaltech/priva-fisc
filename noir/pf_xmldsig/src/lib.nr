@@ -208,17 +208,36 @@ pub fn digit(c: u8) -> u64 {
     (c - 48) as u64
 }
 
-/// "YYYY-MM-DDThh:mm:ss+hh:mm" -> (YYYYMMDDhhmmss, offset packed as 10000 + hhmm). Every one of the
-/// 25 characters is constrained: month, day and time of day are in range, and the offset is "+01:00"
-/// or "+02:00" (Montenegro's standard and summer time; the documents this code reads carry no other).
-pub fn parse_datetime(s: [u8; 25]) -> (Field, Field) {
+/// A date and time as the schema writes it (UTCSType): "YYYY-MM-DDThh:mm:ss" followed by "Z" or by
+/// an offset "+hh:mm" / "-hh:mm".
+pub struct DateTime {
+    /// YYYYMMDDhhmmss, the digits as written.
+    pub written: Field,
+    /// How the zone is written: 10000 + hhmm for "+hh:mm", 20000 + hhmm for "-hh:mm", 30000 for
+    /// "Z". Together with `written` it gives back the exact text.
+    pub zone: Field,
+    pub year: u32,
+    /// month * 100 + day, as written.
+    pub month_day: u32,
+    /// Minutes since midnight, as written.
+    pub minute_of_day: u32,
+    /// Distance from UTC in minutes (0 for "Z"), and whether it is written with '-'.
+    pub offset_minutes: u32,
+    pub offset_negative: bool,
+    /// Characters the text takes: 20 when it ends in "Z", 25 with an offset.
+    pub len: u32,
+}
+
+/// A date and time (see `DateTime`) followed by the '"' that closes the attribute value. Every
+/// character up to and including that quote is constrained: month, day and time of day are in
+/// range and the offset is at most 14:00. When the text ends in "Z" the five bytes after the
+/// quote belong to whatever follows and are not looked at.
+pub fn parse_datetime_until_quote(s: [u8; 26]) -> DateTime {
     assert(s[4] == 45, "datetime: expected '-'");
     assert(s[7] == 45, "datetime: expected '-'");
     assert(s[10] == 84, "datetime: expected 'T'");
     assert(s[13] == 58, "datetime: expected ':'");
     assert(s[16] == 58, "datetime: expected ':'");
-    assert(s[19] == 43, "datetime: expected '+'");
-    assert(s[22] == 58, "datetime: expected ':'");
 
     let year = digit(s[0]) * 1000 + digit(s[1]) * 100 + digit(s[2]) * 10 + digit(s[3]);
     let month = digit(s[5]) * 10 + digit(s[6]);
@@ -231,14 +250,76 @@ pub fn parse_datetime(s: [u8; 25]) -> (Field, Field) {
     assert(hour <= 23, "datetime: hour out of range");
     assert((minute <= 59) & (second <= 59), "datetime: minute or second out of range");
 
-    let offset_hours = digit(s[21]);
-    assert(
-        (s[20] == 48) & ((offset_hours == 1) | (offset_hours == 2)) & (s[23] == 48) & (s[24] == 48),
-        "datetime: offset is not +01:00 or +02:00",
-    );
+    let utc = s[19] == 90; // 'Z'
+    let mut offset_hours: u64 = 0;
+    let mut offset_minutes: u64 = 0;
+    let mut offset_negative = false;
+    if utc {
+        assert(s[20] == 34, "datetime: not closed after 'Z'");
+    } else {
+        assert((s[19] == 43) | (s[19] == 45), "datetime: expected '+', '-' or 'Z'");
+        offset_negative = s[19] == 45;
+        offset_hours = digit(s[20]) * 10 + digit(s[21]);
+        assert(s[22] == 58, "datetime: expected ':'");
+        offset_minutes = digit(s[23]) * 10 + digit(s[24]);
+        assert(
+            ((offset_hours <= 13) & (offset_minutes <= 59)) | ((offset_hours == 14) & (offset_minutes == 0)),
+            "datetime: offset out of range",
+        );
+        assert(s[25] == 34, "datetime: not closed after the offset");
+    }
 
-    let local = ((((year * 100 + month) * 100 + day) * 100 + hour) * 100 + minute) * 100 + second;
-    (local as Field, (10000 + offset_hours * 100) as Field)
+    let written = ((((year * 100 + month) * 100 + day) * 100 + hour) * 100 + minute) * 100 + second;
+    let zone = if utc {
+        30000
+    } else {
+        (if offset_negative { 20000 } else { 10000 }) + offset_hours * 100 + offset_minutes
+    };
+    DateTime {
+        written: written as Field,
+        zone: zone as Field,
+        year: year as u32,
+        month_day: (month * 100 + day) as u32,
+        minute_of_day: (hour * 60 + minute) as u32,
+        offset_minutes: (offset_hours * 60 + offset_minutes) as u32,
+        offset_negative,
+        len: if utc { 20 } else { 25 },
+    }
+}
+
+/// A date and time that takes all 25 characters given, that is, one written with an offset.
+pub fn parse_datetime(s: [u8; 25]) -> DateTime {
+    let mut closed: [u8; 26] = [34; 26];
+    for i in 0..25 {
+        closed[i] = s[i];
+    }
+    let dt = parse_datetime_until_quote(closed);
+    assert(dt.len == 25, "datetime: expected an offset");
+    dt
+}
+
+/// (year, month * 100 + day) of the moment on a clock `minutes_east` minutes ahead of UTC, exact
+/// where the year on that clock is not the year as written: a time written in UTC or with another
+/// offset can fall on the other side of New Year. On every other day the date is given as
+/// written, which can be one day off.
+pub fn date_on_clock(dt: DateTime, minutes_east: u32) -> (u32, u32) {
+    assert(minutes_east <= 840);
+    // Minutes since the written day began, counted on that clock, plus 840 so that it cannot go
+    // below zero (offsets reach 14 hours either way).
+    let t = if dt.offset_negative {
+        dt.minute_of_day + minutes_east + 840 + dt.offset_minutes
+    } else {
+        dt.minute_of_day + minutes_east + 840 - dt.offset_minutes
+    };
+    let next_year = (dt.month_day == 1231) & (t >= 1440 + 840);
+    let previous_year = (dt.month_day == 101) & (t < 840);
+    if next_year {
+        (dt.year + 1, 101)
+    } else if previous_year {
+        (dt.year - 1, 1231)
+    } else {
+        (dt.year, dt.month_day)
+    }
 }
 
 /// EFI registration code "[a-z]{2}[0-9]{3}[a-z]{2}[0-9]{3}" -> its 10 bytes packed big-endian.
@@ -418,12 +499,53 @@ fn test_parse_uuid_rejects_shifted_dash() {
 
 #[test]
 fn test_parse_datetime() {
-    let (local, off) = parse_datetime("2026-03-14T09:26:53+01:00".as_bytes());
-    assert(local == 20260314092653);
-    assert(off == 10100);
-    let (local2, off2) = parse_datetime("2026-07-31T23:59:59+02:00".as_bytes());
-    assert(local2 == 20260731235959);
-    assert(off2 == 10200);
+    let a = parse_datetime("2026-03-14T09:26:53+01:00".as_bytes());
+    assert(a.written == 20260314092653);
+    assert(a.zone == 10100);
+    assert(a.year == 2026);
+    assert(a.month_day == 314);
+    assert(a.minute_of_day == 9 * 60 + 26);
+    assert(a.offset_minutes == 60);
+    assert(!a.offset_negative);
+    assert(a.len == 25);
+    let b = parse_datetime("2026-07-31T23:59:59+02:00".as_bytes());
+    assert(b.written == 20260731235959);
+    assert(b.zone == 10200);
+}
+
+#[test]
+fn test_parse_datetime_reads_every_way_the_schema_writes_the_zone() {
+    // UTC as "Z": 20 characters, then the closing quote; what follows is not looked at.
+    let z = parse_datetime_until_quote("2026-03-14T08:26:53Z\" UUID".as_bytes());
+    assert(z.written == 20260314082653);
+    assert(z.zone == 30000);
+    assert(z.offset_minutes == 0);
+    assert(z.len == 20);
+    // UTC as an offset of zero, with either sign.
+    let p = parse_datetime_until_quote("2026-03-14T08:26:53+00:00\"".as_bytes());
+    assert(p.zone == 10000);
+    assert(p.offset_minutes == 0);
+    assert(p.len == 25);
+    let m = parse_datetime_until_quote("2026-03-14T08:26:53-00:00\"".as_bytes());
+    assert(m.zone == 20000);
+    assert(m.offset_negative);
+    // West of UTC, and the largest offsets there are.
+    let w = parse_datetime_until_quote("2026-03-14T03:56:53-04:30\"".as_bytes());
+    assert(w.zone == 20430);
+    assert(w.offset_minutes == 270);
+    assert(w.offset_negative);
+    assert(parse_datetime_until_quote("2026-03-14T22:26:53+14:00\"".as_bytes()).offset_minutes == 840);
+    assert(parse_datetime_until_quote("2026-03-13T18:26:53-14:00\"".as_bytes()).zone == 21400);
+    assert(parse_datetime_until_quote("2026-03-14T13:11:53+05:45\"".as_bytes()).zone == 10545);
+}
+
+#[test]
+fn test_the_three_spellings_of_utc_differ_in_what_is_committed() {
+    let z = parse_datetime_until_quote("2026-03-14T08:26:53Z\"     ".as_bytes());
+    let p = parse_datetime_until_quote("2026-03-14T08:26:53+00:00\"".as_bytes());
+    let m = parse_datetime_until_quote("2026-03-14T08:26:53-00:00\"".as_bytes());
+    assert(z.written == p.written);
+    assert((z.zone != p.zone) & (p.zone != m.zone) & (z.zone != m.zone));
 }
 
 #[test(should_fail_with = "datetime: month out of range")]
@@ -441,19 +563,92 @@ fn test_parse_datetime_rejects_hour_24() {
     let _ = parse_datetime("2026-03-14T24:00:00+01:00".as_bytes());
 }
 
-#[test(should_fail_with = "datetime: expected '+'")]
-fn test_parse_datetime_rejects_negative_offset() {
-    let _ = parse_datetime("2026-03-14T09:26:53-05:30".as_bytes());
+#[test(should_fail_with = "datetime: offset out of range")]
+fn test_parse_datetime_rejects_offset_above_14_hours() {
+    let _ = parse_datetime("2026-12-31T23:30:00+14:01".as_bytes());
 }
 
-#[test(should_fail_with = "datetime: offset is not +01:00 or +02:00")]
-fn test_parse_datetime_rejects_other_offset() {
-    let _ = parse_datetime("2026-12-31T23:30:00+13:00".as_bytes());
+#[test(should_fail_with = "datetime: offset out of range")]
+fn test_parse_datetime_rejects_offset_of_15_hours() {
+    let _ = parse_datetime("2026-12-31T23:30:00-15:00".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: offset out of range")]
+fn test_parse_datetime_rejects_60_minutes_of_offset() {
+    let _ = parse_datetime("2026-12-31T23:30:00+01:60".as_bytes());
 }
 
 #[test(should_fail_with = "datetime: expected 'T'")]
 fn test_parse_datetime_rejects_space() {
     let _ = parse_datetime("2026-03-14 09:26:53+01:00".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: expected '+', '-' or 'Z'")]
+fn test_parse_datetime_rejects_missing_zone() {
+    let _ = parse_datetime_until_quote("2026-03-14T09:26:53\" UUID=".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: expected '+', '-' or 'Z'")]
+fn test_parse_datetime_rejects_lower_case_z() {
+    let _ = parse_datetime_until_quote("2026-03-14T09:26:53z\" UUID".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: expected '+', '-' or 'Z'")]
+fn test_parse_datetime_rejects_fraction_of_a_second() {
+    let _ = parse_datetime_until_quote("2026-03-14T09:26:53.123Z\" ".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: not closed after 'Z'")]
+fn test_parse_datetime_rejects_text_after_z() {
+    let _ = parse_datetime_until_quote("2026-03-14T09:26:53Z+01:00".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: not closed after the offset")]
+fn test_parse_datetime_rejects_text_after_offset() {
+    let _ = parse_datetime_until_quote("2026-03-14T09:26:53+01:000".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: expected ':'")]
+fn test_parse_datetime_rejects_offset_without_colon() {
+    let _ = parse_datetime_until_quote("2026-03-14T09:26:53+0100\"\"".as_bytes());
+}
+
+#[test(should_fail_with = "expected a digit")]
+fn test_parse_datetime_rejects_one_digit_offset() {
+    let _ = parse_datetime_until_quote("2026-03-14T09:26:53+1:00\"\"".as_bytes());
+}
+
+#[test(should_fail_with = "datetime: expected an offset")]
+fn test_fixed_width_datetime_rejects_z() {
+    // In a place that holds 25 characters, a "Z" time would have to bring its own closing quote.
+    let _ = parse_datetime("2026-03-14T09:26:53Z\"abcd".as_bytes());
+}
+
+fn on_clock(text: str<26>) -> (u32, u32) {
+    date_on_clock(parse_datetime_until_quote(text.as_bytes()), 60)
+}
+
+#[test]
+fn test_date_on_the_countrys_clock() {
+    // Written on that clock: the year is the one written.
+    assert(on_clock("2027-01-01T00:30:00+01:00\"") == (2027, 101));
+    assert(on_clock("2026-12-31T23:59:59+01:00\"") == (2026, 1231));
+    // Half past midnight on New Year's Day there, written in UTC: still 31 December in the text.
+    assert(on_clock("2026-12-31T23:30:00Z\"     ") == (2027, 101));
+    assert(on_clock("2026-12-31T23:30:00+00:00\"") == (2027, 101));
+    assert(on_clock("2026-12-31T23:00:00Z\"     ") == (2027, 101));
+    assert(on_clock("2026-12-31T22:59:59Z\"     ") == (2026, 1231));
+    // The same moment written west of UTC.
+    assert(on_clock("2026-12-31T18:30:00-05:00\"") == (2027, 101));
+    assert(on_clock("2026-12-31T17:59:00-05:00\"") == (2026, 1231));
+    // Written ahead of that clock: 00:30 at +02:00 on 1 January is still 23:30 on 31 December there.
+    assert(on_clock("2027-01-01T00:30:00+02:00\"") == (2026, 1231));
+    assert(on_clock("2027-01-01T01:00:00+02:00\"") == (2027, 101));
+    assert(on_clock("2027-01-01T12:59:00+14:00\"") == (2026, 1231));
+    assert(on_clock("2027-01-01T13:00:00+14:00\"") == (2027, 101));
+    // Other days of the year are given as written.
+    assert(on_clock("2026-06-30T23:30:00Z\"     ") == (2026, 630));
+    assert(on_clock("2026-01-02T00:10:00+02:00\"") == (2026, 102));
 }
 
 #[test]

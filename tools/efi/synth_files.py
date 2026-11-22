@@ -26,7 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import formats  # noqa: E402
 from efi_common import new_key  # noqa: E402
-from leaf_request_inputs import build_request, core_fields, signed_xml  # noqa: E402
+from leaf_request_inputs import build_request, core_fields, receipt_time, signed_xml  # noqa: E402
 from leaf_response_inputs import synthetic_soap  # noqa: E402
 
 BUYERS = {"me": {"type": "TIN", "num": "12345678"}, "al": {"type": "NUIS", "num": "K12345678A"}}
@@ -53,7 +53,7 @@ def write(n, out, start=1, fmt=formats.MONTENEGRO):
         total += c["total"]
         with open(os.path.join(out, f"request_{i + 1:02d}.xml"), "wb") as f:
             f.write(signed_xml(taxpayer, build_request(taxpayer, c, tricky=False, fmt=fmt)))
-        receipt = (c["uuid"].encode(), c["issue"].encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
+        receipt = (c["uuid"].encode(), receipt_time(c).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
         with open(os.path.join(out, f"receipt_{i + 1:02d}.xml"), "wb") as f:
             f.write(synthetic_soap(authority, receipt, fmt))
     summary = {"count": n, "year": base["year"], "total": f"{total // 100}.{total % 100:02d}",

@@ -79,11 +79,11 @@ import poseidon2  # noqa: E402
 
 OPEN_PKG = os.path.normpath(os.path.join(HERE, "..", "..", "noir", "open_invoice"))
 DOMAIN_OPENING = int.from_bytes(b"PF-OPENING", "big")
-ORDER = ("iic", "fic", "ordinal", "issue_local_ts", "issue_tz", "total_negative", "total_cents", "unit", "device", "salt")
+ORDER = ("iic", "fic", "ordinal", "issue_ts", "issue_zone", "total_negative", "total_cents", "unit", "device", "salt")
 # In a proof about one buyer the commitment also binds the buyer and has no sign: that statement
 # admits no negative total (noir/pf_efi/src/debtor.nr).
 DOMAIN_OPENING_BUYER = int.from_bytes(b"PF-OPENBUY", "big")
-ORDER_BUYER = ("iic", "fic", "ordinal", "issue_local_ts", "issue_tz", "total_cents", "unit", "device", "buyer", "salt")
+ORDER_BUYER = ("iic", "fic", "ordinal", "issue_ts", "issue_zone", "total_cents", "unit", "device", "buyer", "salt")
 BUYER_FORM = re.compile(r"[A-Z]{2,4}:[0-9A-Za-z]{1,20}")
 
 
@@ -98,7 +98,7 @@ def opening_of(doc, fic, salt):
     """The preimage of one invoice's opening commitment, from its canonical request and receipt code.
     "device" is None for an invoice without a device code (a format where it is optional)."""
     fmt = formats.of_request(bytes(doc))
-    tag = doc[fmt.tag_start:]
+    tag = doc[fmt.tag_start(bytes(doc)):]
     start_tag = re.sub(rb'"[^"]*"', lambda m: b'"' + b"x" * (len(m.group(0)) - 2) + b'"', tag)
     start_tag = tag[:start_tag.index(b">")]
 
@@ -124,11 +124,14 @@ def opening_of(doc, fic, salt):
 
 
 def field_values(o):
-    dt = o["issue_date_time"]
-    if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d", dt):
+    # The time enters the commitment as written: its digits, and a code for how its zone is
+    # spelled, so that "Z", "+00:00" and "-00:00" are three different openings.
+    if not isinstance(o["issue_date_time"], str):
         raise ValueError("issue_date_time is not in the expected form")
-    local = int(dt[0:4] + dt[5:7] + dt[8:10] + dt[11:13] + dt[14:16] + dt[17:19])
-    tz = int(("1" if dt[19] == "+" else "2") + dt[20:22] + dt[23:25])
+    try:
+        written, zone, _ = formats.read_time(o["issue_date_time"])
+    except formats.BadTime:
+        raise ValueError("issue_date_time is not in the expected form")
     total = o["total"]
     negative = total.startswith("-")
     digits = total.lstrip("-")
@@ -147,8 +150,8 @@ def field_values(o):
         "iic": hex(int(o["iic"], 16)),
         "fic": hex(int(o["fic"].replace("-", ""), 16)),
         "ordinal": str(o["ordinal"]),
-        "issue_local_ts": str(local),
-        "issue_tz": str(tz),
+        "issue_ts": str(written),
+        "issue_zone": str(zone),
         "total_negative": "1" if negative else "0",
         "total_cents": str(cents),
         # Registration codes enter the circuit as their ten bytes, packed big-endian.

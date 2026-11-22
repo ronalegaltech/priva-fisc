@@ -9,8 +9,8 @@ fn main(
     iic: Field,
     fic: Field,
     ordinal: Field,
-    issue_local_ts: Field,
-    issue_tz: Field,
+    issue_ts: Field,
+    issue_zone: Field,
     total_negative: Field,
     total_cents: Field,
     unit: Field,
@@ -18,6 +18,6 @@ fn main(
     salt: Field,
 ) -> pub Field {
     opening_commitment(
-        iic, fic, ordinal, issue_local_ts, issue_tz, total_negative, total_cents, unit, device, salt,
+        iic, fic, ordinal, issue_ts, issue_zone, total_negative, total_cents, unit, device, salt,
     )
 }

@@ -8,19 +8,22 @@
 // (format.nr) plus four character-class-checked fields.
 // Canonicalization done outside the circuit can therefore affect liveness only, never soundness.
 //
-// Known liveness limit: SendDateTime with a numeric offset (25 chars; the schema also allows "Z").
+// Known liveness limit: SendDateTime written with an offset (25 characters, any offset). The schema
+// also allows "Z", which would make the response five bytes shorter; the one real response seen
+// carries an offset.
 
 use crate::format::Format;
-use pf_xmldsig::{parse_datetime, parse_uuid, signed_info_digest_response};
+use pf_xmldsig::{date_on_clock, parse_datetime, parse_uuid, signed_info_digest_response};
 
 pub struct ResponseFields {
     pub request_uuid: Field,
     pub response_uuid: Field,
     pub fic: Field,
-    pub send_local_ts: Field,
-    pub send_tz: Field,
-    /// Year, and month * 100 + day, of SendDateTime: the only date in the whole record that the
-    /// authority itself signed.
+    /// SendDateTime as written: its digits (YYYYMMDDhhmmss) and how its zone is written.
+    pub send_ts: Field,
+    pub send_zone: Field,
+    /// Year, and month * 100 + day, of SendDateTime on the country's clock (format.nr): the only
+    /// date in the whole record that the authority itself signed.
     pub send_year: u32,
     pub send_month_day: u32,
 }
@@ -34,17 +37,16 @@ pub fn response_fields_and_digest<let H: u32, let L: u32>(
     fic: [u8; 36],
 ) -> (ResponseFields, [u8; 32]) {
     // Field syntax first: after this the document below has exactly one XML reading.
-    let (send_local_ts, send_tz) = parse_datetime(send_date_time);
-    // parse_datetime constrained these characters to digits.
-    let d = |i: u32| (send_date_time[i] - 48) as u32;
+    let send = parse_datetime(send_date_time);
+    let (send_year, send_month_day) = date_on_clock(send, format.new_year_clock);
     let fields = ResponseFields {
         request_uuid: parse_uuid(request_uuid),
         response_uuid: parse_uuid(response_uuid),
         fic: parse_uuid(fic),
-        send_local_ts,
-        send_tz,
-        send_year: d(0) * 1000 + d(1) * 100 + d(2) * 10 + d(3),
-        send_month_day: (d(5) * 10 + d(6)) * 100 + d(8) * 10 + d(9),
+        send_ts: send.written,
+        send_zone: send.zone,
+        send_year,
+        send_month_day,
     };
 
     let mut doc = format.response;

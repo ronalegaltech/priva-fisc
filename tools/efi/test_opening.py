@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Spot-check round trip on the 1-invoice circuit: the opening of the invoice must match the
-commitment the circuit publishes, and an edited opening must not. Then the comparison of an
-opening with the authority's record.
+commitment the circuit publishes, and an edited opening must not. Then the same round trip for
+requests in other shapes the schema allows (the tools must find the invoice's values where the
+circuit finds them, and take a time written in UTC the way the circuit does), and the comparison
+of an opening with the authority's record.
 
 Run from anywhere:  python3 tools/efi/test_opening.py
 """
@@ -90,6 +92,19 @@ def main():
         ok = r.returncode != 0 and "MATCH" not in r.stdout
         failed += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {'--first without the proof':28s} {'refused' if ok else 'ACCEPTED'}")
+
+        for shape in ("utc-z", "offset-zero", "west-of-utc", "late-technicalerror", "late-utc-z", "zero-total-plain"):
+            sh(sys.executable, os.path.join(HERE, "batch_inputs.py"), "synthetic", "--k", "1", "--out", prover, "--shape", shape)
+            r = sh("nargo", "execute", "-p", "ProverOpenTest", "witness_test", cwd=PKG)
+            commitment = re.findall(r"0x[0-9a-f]+", re.search(r"Circuit output: (.*)", r.stdout + r.stderr).group(1))[-1]
+            sh(sys.executable, os.path.join(HERE, "opening.py"), "reveal", "--prover", prover, "--index", "0", "--out", opening)
+            os.remove(prover)
+            check("shape " + shape, "MATCH")
+            if shape == "utc-z":
+                # The same moment spelled another way is another opening.
+                o = json.load(open(opening))
+                json.dump(dict(o, issue_date_time=o["issue_date_time"][:19] + "+00:00"), open(opening, "w"))
+                check("Z respelled as +00:00", "NO MATCH")
     print("all cases behave as required" if not failed else f"{failed} case(s) WRONG")
     return 1 if failed else 0
 
