@@ -2,9 +2,10 @@
 # Every test in one command.
 #
 #   . tools/toolchain.env && sh tools/test.sh          # about 10 minutes once the circuits are compiled
-#   . tools/toolchain.env && sh tools/test.sh full     # about an hour more, needs 6 GB of free memory
-# The first run compiles every circuit it touches, which adds about 15 minutes to the default run
-# and about 50 to the full one (four to six minutes for each of the large circuits).
+#   . tools/toolchain.env && sh tools/test.sh full     # needs 6 GB of free memory
+# The first run compiles every circuit it touches (four to six minutes for each of the large ones).
+# From a fresh copy, compiling included, the full run took an hour and a half on an Apple M3 with
+# 16 GB.
 #
 # The default run covers the libraries, the 1-invoice circuits, the command line, the spot-check
 # tools and the aggregation tree over leaves of one invoice (which proves, joins and verifies real
