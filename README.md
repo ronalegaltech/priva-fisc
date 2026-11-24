@@ -251,6 +251,7 @@ python3 tools/efi/opening.py compare --opening /tmp/opening.json --authority loo
 
 sh tools/test.sh                              # every fast test, about 10 minutes once compiled
 sh tools/test.sh full                         # adds the large circuits, long invoices, contracts, local network
+PF_ONE_BUYER_32768=1 sh tools/test.sh full    # and the one-buyer circuit for a request of 32,768 bytes (see Limits)
 ```
 
 With real files, give the request and receipt of each invoice in ordinal order:
@@ -360,6 +361,16 @@ for the three kinds of proof); they have not been deployed to Sepolia.
   of up to 4,096, 4 of up to 8,192, 2 of up to 16,384, or 1 of up to 32,768. More invoices to
   one buyer than that take several proofs, each with a threshold of its own. For Albanian files
   it reads requests of up to 2,048 bytes only.
+- Compiling the circuit about one buyer for a request of 32,768 bytes (`debtor_k1_m32768`)
+  needs room. On the laptop of the measurements (16 GB of memory) the compiler ran for seven
+  minutes in 0.6 GB and then took 18 GB of swap in 45 seconds, where we stopped it; a compile
+  that finished (eleven minutes) had started with 29 GB of disk free, and one that started with
+  25 GB filled the disk (24 Nov 2026). We have not found out why: the leaf of an aggregate for a
+  request of the same length compiles in seven minutes within 6 GB. The tools do not start that
+  compile with less than 30 GB of disk free, and stop any compile when free disk falls under
+  12 GB. The circuit was compiled and tested on its own in a working copy (the cases of
+  `test_debtor.py --longest`, and one proof made and verified); it is not part of `test.sh full`
+  unless asked for, so the full run from a fresh copy does not cover it.
 - On Starknet the statement about one buyer has a verifier for the circuit of ten short
   requests only. The four circuits for longer requests have none, so their proofs are checked
   off chain (`pf.py verify`) and cannot be recorded in the registry. The reason is cost: every

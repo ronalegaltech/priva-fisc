@@ -232,7 +232,7 @@ def prove_one_buyer(a):
              "context": agg.parse_context(a.context), "year": a.year}
 
     package = os.path.join(ROOT, "noir", circuit)
-    run(["nargo", "compile"], cwd=package, what=f"compiling {circuit}")
+    compile_circuit(circuit)
     tag = "Run" + next(tempfile._get_candidate_names())
     prover_file = os.path.join(package, f"Prover{tag}.toml")
     witness = os.path.join(package, "target", f"witness{tag}.gz")
@@ -284,9 +284,16 @@ def run(cmd, cwd=None, what=None):
     return r
 
 
+def compile_circuit(name):
+    """Compile a circuit of this repository; the compile is watched for disk room (agg.compiled)."""
+    try:
+        return agg.compiled(name)
+    except agg.StepFailed as e:
+        sys.exit(str(e))
+
+
 def circuit_json(k):
-    run(["nargo", "compile"], cwd=pkg(k), what=f"compiling batch_k{k}")
-    return os.path.join(pkg(k), "target", f"batch_k{k}.json")
+    return compile_circuit(f"batch_k{k}")
 
 
 def read_values(path):
@@ -331,7 +338,7 @@ def prove_einvoices(a):
                  f"{ei.K}; ask the service for a shorter period")
     context = agg.parse_context(a.context)
     package = os.path.join(ROOT, "noir", ei.CIRCUIT)
-    run(["nargo", "compile"], cwd=package, what=f"compiling {ei.CIRCUIT}")
+    compile_circuit(ei.CIRCUIT)
     tag = "Run" + next(tempfile._get_candidate_names())
     prover_file = os.path.join(package, f"Prover{tag}.toml")
     witness = os.path.join(package, "target", f"witness{tag}.gz")

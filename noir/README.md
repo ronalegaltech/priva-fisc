@@ -162,7 +162,8 @@ python3 ../tools/efi/test_leaf_response.py     # 7 cases
 python3 ../tools/efi/test_leaf_request.py      # 40 cases: 15 shapes the schema allows, 24 it does not or that were tampered with
 python3 ../tools/efi/test_replay.py            # 6 checks on an invoice signed again
 python3 ../tools/efi/test_debtor.py            # invoices to one buyer: 23 cases (--k 10: 21; --format al for Albanian files)
-python3 ../tools/efi/test_debtor.py --long     # the same statement on the four circuits for longer requests: 31 cases
+python3 ../tools/efi/test_debtor.py --long     # the same statement on the circuits for requests of up to 4,096, 8,192 and 16,384 bytes: 24 cases
+python3 ../tools/efi/test_debtor.py --longest  # and on the circuit for one request of up to 32,768 bytes: 7 cases; compiling it needs room, see below
 python3 ../tools/efi/test_batch.py --k 1       # 17 cases
 python3 ../tools/efi/test_batch.py --k 10      # 16 cases
 python3 ../tools/efi/test_opening.py           # 23 cases
@@ -175,9 +176,15 @@ The aggregation tests always run the prover. Proofs inside a node or the top pro
 when that proof is made, not when its witness is generated, so a test that only executes the outer
 circuit shows nothing about what is inside.
 
-Compiling a large circuit takes four to six minutes. The large circuits sit 4% to 20% under 2^22
-gates (3,367,061 for the batch of 10, 3,756,153 for the Albanian statement about one buyer,
-4,028,042 for the leaf of three requests of up to 16,384 bytes); past that, proving time and
-memory double. The leaves for long requests were sized to that bound: a request of 8,192 bytes
-costs about 780,000 gates and one of 16,384 about 1,360,000, against 347,000 for 2,048. Most of an invoice's cost is hashing the request
-(about 150,000 gates for 2,048 bytes) and the two RSA checks.
+Compiling a large circuit takes four to six minutes, seven for the leaf of one request of 32,768
+bytes (6 GB of memory). The circuit about one buyer for a request of that length
+(`debtor_k1_m32768`) is another matter: eleven minutes, and at the end more memory than a machine
+of 16 GB has, which goes to swap and so to disk (18 GB of it in 45 seconds when measured, see
+Limits in the main README). `tools/efi/agg.py` does not start that compile with less than 30 GB of
+disk free and stops any compile when free disk falls under 12 GB. The large circuits sit 4% to 20%
+under 2^22 gates (3,367,061 for the batch of 10, 3,756,153 for the Albanian statement about one
+buyer, 4,028,042 for the leaf of three requests of up to 16,384 bytes); past that, proving time
+and memory double. The leaves for long requests were sized to that bound: a request of 8,192 bytes
+costs about 780,000 gates and one of 16,384 about 1,360,000, against 347,000 for 2,048. Most of an
+invoice's cost is hashing the request (about 150,000 gates for 2,048 bytes) and the two RSA
+checks.

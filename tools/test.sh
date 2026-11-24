@@ -5,13 +5,20 @@
 #   . tools/toolchain.env && sh tools/test.sh full     # needs 6 GB of free memory
 # The first run compiles every circuit it touches (four to six minutes for each of the large ones).
 # From a fresh copy, compiling included, the full run took an hour and a half on an Apple M3 with
-# 16 GB.
+# 16 GB (23 Nov 2026, before the circuits about one buyer for longer requests were added).
+#
+# One circuit needs more room to compile than the rest, the one about one buyer for a request of
+# 32,768 bytes (debtor_k1_m32768): on that machine the compiler took 18 GB of swap in 45 seconds
+# at the end of an eleven-minute compile, and filled the disk once (24 Nov 2026). It is left out
+# of `full`, and the tools do not start its compile with less than 30 GB of disk free:
+#   PF_ONE_BUYER_32768=1 sh tools/test.sh full     # adds its cases
 #
 # The default run covers the libraries, the 1-invoice circuits, the command line, the spot-check
 # tools and the aggregation tree over leaves of one invoice (which proves, joins and verifies real
 # proofs, with leaf circuits for two lengths of request). `full` adds the 10-invoice circuits, the
 # aggregation tree over the leaves real invoices go through (10, 5, 3 and 1 invoices by length of
-# request), the circuits about one buyer for longer requests, invoices of many lines from files,
+# request), the circuits about one buyer for requests of up to 16,384 bytes, invoices of many
+# lines from files,
 # the Starknet contracts against real proofs, the run on a local Starknet network and the
 # demonstration.
 #
@@ -79,6 +86,9 @@ if [ "${1:-}" = "full" ]; then
     step "10 invoices to one buyer"    python3 tools/efi/test_debtor.py --k 10
     step "the same, Albanian format"   python3 tools/efi/test_debtor.py --k 10 --format al
     step "one buyer, longer requests"  python3 tools/efi/test_debtor.py --long
+    if [ -n "${PF_ONE_BUYER_32768:-}" ]; then
+        step "one buyer, a 32,768-byte request" python3 tools/efi/test_debtor.py --longest
+    fi
     step "aggregation, leaves by length" python3 tools/efi/test_agg.py --family standard
     step "command line, long invoices" python3 tools/test_cli.py --long
     step "registry contract"           in_dir starknet/pf_registry snforge test

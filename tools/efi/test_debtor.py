@@ -6,8 +6,11 @@
   python3 tools/efi/test_debtor.py --format al      # the same for the Albanian format
   python3 tools/efi/test_debtor.py --long           # the circuits for longer requests: 7 invoices
                                                     # of up to 4,096 bytes, 4 of up to 8,192, 2 of
-                                                    # up to 16,384, 1 of up to 32,768 (Montenegrin
-                                                    # format only; there are none for Albanian files)
+                                                    # up to 16,384 (Montenegrin format only; there
+                                                    # are none for Albanian files)
+  python3 tools/efi/test_debtor.py --longest        # the circuit for 1 request of up to 32,768
+                                                    # bytes, apart because compiling it needs room
+                                                    # (see tools/test.sh)
 
 A valid set must execute and publish what a verifier can recompute: the number of invoices, the
 buyer tag, each nullifier (the same value the batch circuits give that invoice) and each opening
@@ -52,13 +55,15 @@ def expected(s, k):
 # fills the circuit, and one that is just too long for the circuit of the next shorter length.
 NEARLY_FULL = {4096: 15, 8192: 40, 16384: 90, 32768: 200}
 TOO_LONG_FOR_SHORTER = {4096: 6, 8192: 20, 16384: 60, 32768: 120}
+LONGEST = 32768
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--k", type=int, default=1)
     ap.add_argument("--format", default="me", choices=[f.name for f in formats.ALL])
-    ap.add_argument("--long", action="store_true", help="the circuits for requests longer than 2,048 bytes")
+    ap.add_argument("--long", action="store_true", help="the circuits for requests of up to 4,096, 8,192 and 16,384 bytes")
+    ap.add_argument("--longest", action="store_true", help="the circuit for one request of up to 32,768 bytes")
     a = ap.parse_args()
     fmt = formats.by_name(a.format)
     failed = 0
@@ -91,12 +96,12 @@ def main():
             return True, values[2:], ""
         return run
 
-    if a.long:
+    if a.long or a.longest:
         if all(longest <= 2048 for _, longest, _ in fmt.one_buyer_circuits):
             print(f"no circuits for longer requests in the format of {fmt.country}")
             return 1
         for k, longest, name in fmt.one_buyer_circuits:
-            if longest <= 2048:
+            if longest <= 2048 or not (a.longest if longest == LONGEST else a.long):
                 continue
             run = runner(name, longest)
             print(f"{name}: up to {k} invoice(s), requests of up to {longest} bytes", flush=True)

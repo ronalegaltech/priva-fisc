@@ -80,11 +80,43 @@ def run(cmd, cwd=None, what=""):
 
 _compiled = {}
 
+# The compiler's memory goes to swap when it does not fit, and swap is disk. Compiling the circuit
+# about one buyer for a request of 32,768 bytes ran for seven minutes in 0.6 GB and then took
+# 18 GB of swap in 45 seconds on a machine with 16 GB of memory; an earlier attempt had filled the
+# disk (24 Nov 2026). So every compile is watched and stopped before the disk is nearly full, and
+# that circuit, while it is not compiled yet, is not started without the room it was seen to need.
+DISK_FLOOR_GB = 12
+ROOM_TO_COMPILE_GB = {"debtor_k1_m32768": 30}
+
+
+def free_disk_gb():
+    return shutil.disk_usage(ROOT).free / 2 ** 30
+
 
 def compiled(name):
+    """Path of the compiled circuit, compiling it if the compiler finds it changed."""
     if name not in _compiled:
-        run(["nargo", "compile"], cwd=pkg(name), what=f"compiling {name}")
-        _compiled[name] = os.path.join(pkg(name), "target", f"{name}.json")
+        target = os.path.join(pkg(name), "target", f"{name}.json")
+        room = ROOM_TO_COMPILE_GB.get(name)
+        if room and not os.path.exists(target) and free_disk_gb() < room:
+            raise StepFailed(f"compiling {name}: not started, {free_disk_gb():.0f} GB of disk are free and this circuit "
+                             f"asks for {room} (the compiler's memory goes to swap)")
+        # Only this process's own compiler is stopped, never another one by name.
+        p = subprocess.Popen(["nargo", "compile"], cwd=pkg(name), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        while True:
+            try:
+                out, err = p.communicate(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                if free_disk_gb() < DISK_FLOOR_GB:
+                    p.kill()
+                    p.communicate()
+                    raise StepFailed(f"compiling {name}: stopped, free disk fell under {DISK_FLOOR_GB} GB "
+                                     "(the compiler's memory was going to swap)")
+        if p.returncode != 0:
+            lines = (err.strip() or out.strip()).splitlines()
+            raise StepFailed(f"compiling {name}: {lines[-1] if lines else ''}")
+        _compiled[name] = target
     return _compiled[name]
 
 
