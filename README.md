@@ -462,4 +462,5 @@ above, and anything from the production service.
 
 ## License
 
-Apache-2.0. See `LICENSE` and `NOTICE`.
+AGPL-3.0-only. See `LICENSE` and `NOTICE`. RoNa Legal DOO holds the copyright and can license
+the software under other terms: write to us through privafisc.com.
