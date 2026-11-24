@@ -510,6 +510,51 @@ fn test_rejects_ordinal_zero() {
     ));
 }
 
+// --- A total of zero. The schema writes an amount of zero as "0.00" or as "0". ---
+
+#[test]
+fn test_reads_total_of_zero_in_both_spellings() {
+    let plain = extract_request_fields(MONTENEGRO, doc_with(
+        " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\"",
+        " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" TCRCode=\"ef789gh012\" TotPrice=\"0\" TotPriceWoVAT=\"0\"></Invoice></RegisterInvoiceRequest>",
+    ));
+    assert(!plain.total_negative);
+    assert(plain.total_cents == 0);
+    assert(plain.ordinal == 7);
+    let decimals = extract_request_fields(MONTENEGRO, doc_with(
+        " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\"",
+        " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" TCRCode=\"ef789gh012\" TotPrice=\"0.00\" TotPriceWoVAT=\"0.00\"></Invoice></RegisterInvoiceRequest>",
+    ));
+    assert(!decimals.total_negative);
+    assert(decimals.total_cents == 0);
+}
+
+#[test(should_fail_with = "amount: negative zero")]
+fn test_rejects_total_of_zero_with_a_minus_sign() {
+    // The schema allows this spelling too. It is refused so that zero has one sign in what an
+    // opening commits to.
+    let _ = extract_request_fields(MONTENEGRO, doc_with(
+        " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\"",
+        " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" TCRCode=\"ef789gh012\" TotPrice=\"-0.00\"></Invoice></RegisterInvoiceRequest>",
+    ));
+}
+
+#[test(should_fail_with = "amount: malformed")]
+fn test_rejects_total_of_zero_written_with_two_digits() {
+    let _ = extract_request_fields(MONTENEGRO, doc_with(
+        " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\"",
+        " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" TCRCode=\"ef789gh012\" TotPrice=\"00\"></Invoice></RegisterInvoiceRequest>",
+    ));
+}
+
+#[test(should_fail_with = "amount: malformed")]
+fn test_rejects_total_of_zero_with_one_decimal() {
+    let _ = extract_request_fields(MONTENEGRO, doc_with(
+        " BusinUnitCode=\"ab123cd456\" IIC=\"000000000000000000000000000000ff\"",
+        " InvOrdNum=\"7\" IssueDateTime=\"2026-03-14T09:26:53+01:00\" TCRCode=\"ef789gh012\" TotPrice=\"0.0\"></Invoice></RegisterInvoiceRequest>",
+    ));
+}
+
 // Signed length of a `doc_with` document: header, attributes before, IICSignature, rest.
 fn doc_len_with(before: u32, after: u32) -> u32 {
     200 + before + 15 + 512 + 1 + after

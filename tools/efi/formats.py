@@ -10,7 +10,8 @@ clock the country keeps at the turn of the year.
   al  Albania. Written against the published specification only ("Fiscalization Service, Technical
       Specification", version 09). No real signed message has been seen; the response is spelled as
       in the specification's example, with the prefix ns2. A non-cash invoice carries no device
-      code there. Only the statement about one buyer is built for this format.
+      code there. Only the statement about one buyer is built for this format, and only for
+      requests of up to 2,048 bytes.
 
 Each format has its own circuits, so a proof made for one does not verify under the keys of
 another. The format of a file is read from the file itself (the namespace of its root element).
@@ -63,7 +64,7 @@ class Format:
     currency: str           # the currency invoices are in unless they say otherwise
     party_id_type: str      # the kind of identifier domestic companies carry, for invented invoices
     country_code: str
-    one_buyer_circuits: tuple   # circuit names by number of slots: ((1, name), (10, name))
+    one_buyer_circuits: tuple   # circuits of the statement about one buyer: ((slots, longest request in bytes, name), ...)
     has_batch_circuits: bool    # the statements about a consecutive run are built for this format
     new_year_clock: int = 60    # minutes the country's clocks are ahead of UTC at the turn of the year
 
@@ -131,8 +132,26 @@ class Format:
         return re.compile(re.escape(p0) + b"(.{36})" + re.escape(p1) + b"(.{25})" + re.escape(p2)
                           + b"(.{36})" + re.escape(p3) + b"(.{36})" + re.escape(p4), re.S)
 
-    def one_buyer_circuit(self, slots: int) -> str:
-        return dict(self.one_buyer_circuits)[slots]
+    def one_buyer_circuit(self, slots: int, longest: int = 2048) -> str:
+        """The circuit about one buyer with this many slots for requests of up to `longest` bytes."""
+        return next(name for k, m, name in self.one_buyer_circuits if (k, m) == (slots, longest))
+
+    def one_buyer_choice(self, count: int, longest: int):
+        """(slots, longest request, name) of the circuit for `count` invoices to one buyer whose
+        longest request is `longest` bytes, or None when no single proof holds them. The longer
+        the requests, the fewer of them one proof holds. Of the circuits that fit, the one for
+        the shortest requests is taken."""
+        fits = [c for c in self.one_buyer_circuits if c[0] >= count and c[1] >= longest]
+        return min(fits, key=lambda c: (c[1], c[0])) if fits else None
+
+    def one_buyer_capacity(self) -> str:
+        """What one proof about one buyer holds, in words."""
+        by_length = {}
+        for k, m, _ in self.one_buyer_circuits:
+            by_length[m] = max(k, by_length.get(m, 0))
+        first, *rest = sorted(by_length.items())
+        return (f"{first[1]} requests of up to {first[0]:,} bytes"
+                + "".join(f", or {k} of up to {m:,}" for m, k in rest))
 
 
 MONTENEGRO = Format(
@@ -140,7 +159,10 @@ MONTENEGRO = Format(
     response_prefix="", device_required=True,
     basis="the published schema and real messages of the test environment",
     currency="EUR", party_id_type="TIN", country_code="MNE",
-    one_buyer_circuits=((1, "debtor_k1"), (10, "debtor_k10")), has_batch_circuits=True,
+    one_buyer_circuits=((1, 2048, "debtor_k1"), (10, 2048, "debtor_k10"), (7, 4096, "debtor_k7_m4096"),
+                        (4, 8192, "debtor_k4_m8192"), (2, 16384, "debtor_k2_m16384"),
+                        (1, 32768, "debtor_k1_m32768")),
+    has_batch_circuits=True,
 )
 
 ALBANIA = Format(
@@ -148,7 +170,9 @@ ALBANIA = Format(
     version="3", response_prefix="ns2", device_required=False,
     basis="the published specification only; no real signed message has been seen",
     currency="ALL", party_id_type="NUIS", country_code="ALB",
-    one_buyer_circuits=((1, "debtor_al_k1"), (10, "debtor_al_k10")), has_batch_circuits=False,
+    # No circuits for longer requests in this format: it has not been checked against a real message.
+    one_buyer_circuits=((1, 2048, "debtor_al_k1"), (10, 2048, "debtor_al_k10")),
+    has_batch_circuits=False,
 )
 
 ALL = (MONTENEGRO, ALBANIA)

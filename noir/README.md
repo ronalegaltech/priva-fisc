@@ -10,6 +10,7 @@ Noir 1.0.0, proved with Barretenberg 6.0.0 (`bb prove -t evm`, hiding mode).
 | `batch_k1`, `batch_k10` | circuit | 1 and 10 invoices in one proof. |
 | `debtor_k1`, `debtor_k10` | circuit | 1 and up to 10 invoices issued to one buyer: number of invoices, buyer tag, total at least a threshold (381,165 and 3,717,548 gates; about 4 s and 33 s with `pf.py prove --buyer`). |
 | `debtor_al_k1`, `debtor_al_k10` | circuit | The same statement for invoices in the Albanian format (see below). An invoice without a device code has device 0 in its opening commitment (385,176 and 3,756,153 gates). |
+| `debtor_k7_m4096`, `debtor_k4_m8192`, `debtor_k2_m16384`, `debtor_k1_m32768` | circuit | The same statement for longer requests: up to 7 invoices whose requests are at most 4,096 bytes, 4 of up to 8,192, 2 of up to 16,384, 1 of up to 32,768 (3,672,650, 3,325,430, 2,896,505 and 2,694,845 gates). `pf.py` takes the circuit for the shortest requests that holds the invoices given. No aggregated form: more invoices to one buyer take several proofs. Montenegrin format only, and no Starknet verifier: these proofs are checked off chain. |
 | `einvoice_al_k10` | circuit | Up to 10 open e-invoices of one seller to one buyer, read from ONE answer of Albania's e-invoice service in which the authority signs amount, parties and status of every e-invoice: number of e-invoices, buyer tag, seller tag, day of the answer, total at least a threshold (945,269 gates; about 10 s with `pf.py prove --einvoices`). Statement and limits in `pf_efi/src/einvoice.nr`. |
 | `agg_leaf_k10`, `agg_leaf_k5_m8192`, `agg_leaf_k3_m16384`, `agg_leaf_k1_m32768` | circuit | Aggregation leaves, one for each length of request: up to 10 invoices whose requests are at most 2,048 bytes, 5 of up to 8,192, 3 of up to 16,384, 1 of up to 32,768. A leaf checks its invoices (it may hold fewer than it has slots) and publishes a blinded commitment to the run. 3,368,744, 3,835,607, 4,028,042 and 2,517,213 gates. |
 | `agg_leaf_k1`, `agg_leaf_k1_m4096` | circuit | Two leaves of one invoice (requests of up to 2,048 and 4,096 bytes): a second, small family of leaf circuits, with which the tests build trees that mix leaf circuits without proving the large ones. 346,893 and 491,581 gates. |
@@ -156,10 +157,12 @@ Outside a circuit the tools compute Poseidon2 in Python (`tools/efi/poseidon2.py
 
 ```sh
 (cd pf_xmldsig && nargo test)                  # 39
-(cd pf_efi && nargo test)                      # 113
+(cd pf_efi && nargo test)                      # 117
 python3 ../tools/efi/test_leaf_response.py     # 7 cases
 python3 ../tools/efi/test_leaf_request.py      # 40 cases: 15 shapes the schema allows, 24 it does not or that were tampered with
 python3 ../tools/efi/test_replay.py            # 6 checks on an invoice signed again
+python3 ../tools/efi/test_debtor.py            # invoices to one buyer: 23 cases (--k 10: 21; --format al for Albanian files)
+python3 ../tools/efi/test_debtor.py --long     # the same statement on the four circuits for longer requests: 31 cases
 python3 ../tools/efi/test_batch.py --k 1       # 17 cases
 python3 ../tools/efi/test_batch.py --k 10      # 16 cases
 python3 ../tools/efi/test_opening.py           # 23 cases

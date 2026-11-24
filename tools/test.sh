@@ -11,8 +11,9 @@
 # tools and the aggregation tree over leaves of one invoice (which proves, joins and verifies real
 # proofs, with leaf circuits for two lengths of request). `full` adds the 10-invoice circuits, the
 # aggregation tree over the leaves real invoices go through (10, 5, 3 and 1 invoices by length of
-# request), an invoice of many lines from files, the Starknet contracts against real proofs, the
-# run on a local Starknet network and the demonstration.
+# request), the circuits about one buyer for longer requests, invoices of many lines from files,
+# the Starknet contracts against real proofs, the run on a local Starknet network and the
+# demonstration.
 #
 # Four steps compare with material that is not kept here and are skipped without it: the schema
 # the tax administration publishes (PF_EFI_XSD_DIR, see tools/efi/test_schema.py), the test vectors
@@ -20,6 +21,10 @@
 # real requests printed in the administration's access instructions (PF_EFI_ACCESS_DOCX, see
 # tools/efi/test_real_requests.py) and one real request with its receipt from the test service
 # (PF_EFI_REAL_NOTEBOOK, see tools/efi/test_real_pair.py).
+#
+# PF_BEFORE_STEP, if set, is a command run before every step. On a machine that is short of memory
+# it can wait until there is room: the large steps take up to 6 GB each, one after another. If it
+# fails, the step is not run and counts as failed.
 #
 # Needs: nargo and Python with lxml and cryptography for everything; bb for the aggregation tests
 # and the demonstration; scarb, snforge and universal-sierra-compiler for the contract tests;
@@ -33,6 +38,11 @@ ESC="$(printf '\033')"
 # step LABEL COMMAND...: run, show the last line, remember a failure
 step() {
     label="$1"; shift
+    if [ -n "${PF_BEFORE_STEP:-}" ] && ! sh -c "$PF_BEFORE_STEP"; then
+        printf 'FAIL  %-34s %s\n' "$label" "not run: PF_BEFORE_STEP failed"
+        FAILED="$FAILED $label;"
+        return
+    fi
     out="$("$@" 2>&1)"; code=$?
     last="$(printf '%s\n' "$out" | tail -1 | sed "s/$ESC\[[0-9;]*m//g")"
     if [ $code -eq 0 ]; then
@@ -68,8 +78,9 @@ if [ "${1:-}" = "full" ]; then
     step "10 invoices"                 python3 tools/efi/test_batch.py --k 10
     step "10 invoices to one buyer"    python3 tools/efi/test_debtor.py --k 10
     step "the same, Albanian format"   python3 tools/efi/test_debtor.py --k 10 --format al
+    step "one buyer, longer requests"  python3 tools/efi/test_debtor.py --long
     step "aggregation, leaves by length" python3 tools/efi/test_agg.py --family standard
-    step "command line, long invoice"  python3 tools/test_cli.py --long
+    step "command line, long invoices" python3 tools/test_cli.py --long
     step "registry contract"           in_dir starknet/pf_registry snforge test
     step "local Starknet network"      sh tools/starknet/devnet_demo.sh
     step "demonstration"               python3 tools/demo.py

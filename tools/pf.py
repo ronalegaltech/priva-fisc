@@ -28,9 +28,13 @@ With --buyer the statement is another one: the 1 to 10 invoices given were all i
 buyer (for example TIN:02345678, as the identifier stands in the invoices), none has a negative
 total, and their totals reach the threshold. They need not be consecutive. The proof (noir/debtor_k1,
 noir/debtor_k10) publishes a tag of the buyer instead of the buyer; `verify --buyer` recomputes the
-tag and refuses a proof about somebody else. The requests of this statement may be up to 2,048
-bytes long; there is no circuit for longer ones yet.
-With --synthetic N (1 to 10) any word after --buyer will do: the buyer is invented and printed.
+tag and refuses a proof about somebody else. The longer the requests, the fewer invoices one such
+proof holds, and the tool picks the circuit: 10 requests of up to 2,048 bytes, 7 of up to 4,096,
+4 of up to 8,192, 2 of up to 16,384 or 1 of up to 32,768 (noir/debtor_k7_m4096 and so on). More
+invoices than that are not proved together: the statement has no aggregated form. For Albanian
+files there are circuits for requests of up to 2,048 bytes only.
+With --synthetic N (1 to 10) any word after --buyer will do: the buyer is invented and printed;
+--lines L gives the invented invoices L lines each.
 
 `verify` runs on the verifier's machine. It does NOT trust a verification key supplied with the
 proof: it derives the key from the circuit in this repository, checks the proof against it, and
@@ -146,12 +150,12 @@ def parse_buyer(text):
     return buyer_reader.pack(*text.split(":"))
 
 
-def decode_one_buyer(values, fmt=formats.MONTENEGRO):
+def decode_one_buyer(values, fmt, circuit):
     k, count = agg.one_buyer_slots(values), values[5]
     if not 1 <= count <= k:
         sys.exit("unexpected number of invoices in the public values")
     return {
-        "circuit": fmt.one_buyer_circuit(k),
+        "circuit": circuit,
         "format": fmt.name,
         "statement": "invoices issued to one buyer",
         "invoice_count": count,
@@ -166,13 +170,32 @@ def decode_one_buyer(values, fmt=formats.MONTENEGRO):
     }
 
 
+def one_buyer_circuit_for(fmt, invoices):
+    """(slots, longest request, name) of the circuit that holds these invoices to one buyer. The
+    longer the requests, the fewer of them one proof holds; without a circuit for them, no proof."""
+    longest = max(len(i["doc"]) for i in invoices)
+    choice = fmt.one_buyer_choice(len(invoices), longest)
+    if choice is None:
+        sys.exit(f"no proof: {len(invoices)} invoice(s) whose longest request is {longest} bytes do not fit one proof "
+                 f"about one buyer, which holds {fmt.one_buyer_capacity()}")
+    return choice
+
+
 def prove_one_buyer(a):
     if a.synthetic:
         n = a.synthetic
         if not 1 <= n <= 10:
             sys.exit("a proof about one buyer holds 1 to 10 invoices")
         fmt = formats.by_name(a.format)
-        s = debtor_inputs.synthetic(1 if n == 1 else 10, count=n, fmt=fmt)
+        if a.lines:
+            # Invoices of several lines: the circuit follows from how long their requests are.
+            s = debtor_inputs.synthetic(n, fmt=fmt, lines=a.lines)
+            slots, longest, circuit = one_buyer_circuit_for(fmt, s["invoices"])
+            s["invoices"] = s["invoices"] + [s["invoices"][-1]] * (slots - n)
+        else:
+            slots, longest = (1 if n == 1 else 10), batch_inputs.M
+            circuit = fmt.one_buyer_circuit(slots)
+            s = debtor_inputs.synthetic(slots, count=n, fmt=fmt)
         if a.context:
             s["context"] = agg.parse_context(a.context)
         named = buyer_reader.unpack(s["buyer"])
@@ -186,34 +209,28 @@ def prove_one_buyer(a):
         for number, (req_path, resp_path) in enumerate(zip(a.files[0::2], a.files[1::2]), 1):
             doc, req_sig, tmod, fields, resp_sig, imod, fmt = read_pair(req_path, resp_path, number)
             fmts.add(fmt)
-            if len(doc) > batch_inputs.M:
-                sys.exit(f"no proof: invoice {number}: its request is {len(doc)} bytes, and the statement about one "
-                         f"buyer reads requests of up to {batch_inputs.M} (the statement about a consecutive run "
-                         "reads longer ones)")
-            try:
-                found = buyer_reader.buyer_id(bytes(doc))
-            except buyer_reader.BuyerError as e:
-                sys.exit(f"no proof: invoice {number}: {e}")
-            if found != wanted:
-                sys.exit(f"no proof: invoice {number} was issued to another buyer")
             tmods.add(tmod)
             imods.add(imod)
             invoices.append({"doc": doc, "req_sig": req_sig, "resp": fields, "resp_sig": resp_sig, "salt": secrets.randbits(248)})
         if len(fmts) != 1:
             sys.exit("no proof: the files are not all in one country's format")
+        n = len(invoices)
+        slots, longest, circuit = one_buyer_circuit_for(fmt, invoices)
+        # The buyer is read as the circuit chosen reads it, in an array as long as its requests.
+        for number, invoice in enumerate(invoices, 1):
+            try:
+                found = buyer_reader.buyer_id(bytes(invoice["doc"]), size=longest)
+            except buyer_reader.BuyerError as e:
+                sys.exit(f"no proof: invoice {number}: {e}")
+            if found != wanted:
+                sys.exit(f"no proof: invoice {number} was issued to another buyer")
         if len(tmods) != 1 or len(imods) != 1:
             sys.exit("the files are not all signed by one taxpayer key and one authority key")
-        n = len(invoices)
-        if n > 10:
-            sys.exit("a proof about one buyer holds 1 to 10 invoices")
         # Unused slots repeat the last pair: every slot must hold a well-formed signed pair.
-        slots = invoices + [invoices[-1]] * ((1 if n == 1 else 10) - n)
-        s = {"invoices": slots, "taxpayer_modulus": tmods.pop(), "issuer_modulus": imods.pop(), "count": n,
-             "buyer": wanted, "threshold": round(float(a.threshold) * 100),
+        s = {"invoices": invoices + [invoices[-1]] * (slots - n), "taxpayer_modulus": tmods.pop(),
+             "issuer_modulus": imods.pop(), "count": n, "buyer": wanted, "threshold": round(float(a.threshold) * 100),
              "context": agg.parse_context(a.context), "year": a.year}
 
-    k = len(s["invoices"])
-    circuit = fmt.one_buyer_circuit(k)
     package = os.path.join(ROOT, "noir", circuit)
     run(["nargo", "compile"], cwd=package, what=f"compiling {circuit}")
     tag = "Run" + next(tempfile._get_candidate_names())
@@ -222,7 +239,7 @@ def prove_one_buyer(a):
     os.makedirs(a.out, exist_ok=True)
     try:
         with open(prover_file, "w") as f:
-            f.write(debtor_inputs.prover_toml(s))
+            f.write(debtor_inputs.prover_toml(s, longest))
         run(["nargo", "execute", "-p", f"Prover{tag}", f"witness{tag}"], cwd=package, what="the statement does not hold for these invoices; witness generation")
         with tempfile.TemporaryDirectory() as tmp:
             run(["bb", "prove", "-b", os.path.join(package, "target", f"{circuit}.json"), "-w", witness, "-o", tmp, "-t", "evm", "--write_vk"], what="proving")
@@ -233,8 +250,10 @@ def prove_one_buyer(a):
             if os.path.exists(path):
                 os.remove(path)
     with open(os.path.join(a.out, "statement.json"), "w") as f:
-        json.dump(decode_one_buyer(read_values(os.path.join(a.out, "public_inputs")), fmt), f, indent=1)
+        json.dump(decode_one_buyer(read_values(os.path.join(a.out, "public_inputs")), fmt, circuit), f, indent=1)
     print(f"proof for {n} invoice(s) issued to one buyer written to {a.out} (proof, public_inputs, statement.json)")
+    if longest > batch_inputs.M:
+        print(f"  (circuit {circuit}: up to {slots} invoice(s) with requests of up to {longest} bytes)")
     if fmt is not formats.MONTENEGRO:
         print(f"format of the invoices: {fmt.country} ({fmt.basis})")
     if a.synthetic:
@@ -454,11 +473,12 @@ def verify(a):
         nullifiers = st["nullifiers"]
         published = f"{k} nullifier(s), a tag of the buyer, a tag of the seller, the day of the answer"
     elif one_buyer:
-        fmt = agg.one_buyer_format(a.dir, one_buyer)
-        if fmt is None:
+        found = agg.one_buyer_circuit_of(a.dir, one_buyer)
+        if found is None:
             print("PROOF INVALID")
             return 1
-        st = decode_one_buyer(values, fmt)
+        fmt, circuit = found
+        st = decode_one_buyer(values, fmt, circuit)
         k = st["invoice_count"]
         circuit_line = f"{st['circuit']} (verification key derived locally)"
         nullifiers = st["nullifiers"]

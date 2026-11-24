@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Invented invoices for the debtor circuits (noir/debtor_k1, noir/debtor_k10, and noir/debtor_al_k1,
+"""Invented invoices for the debtor circuits (noir/debtor_k1, noir/debtor_k10 and the circuits for
+longer requests, noir/debtor_k7_m4096 to noir/debtor_k1_m32768; noir/debtor_al_k1 and
 noir/debtor_al_k10 for the Albanian format): invoices one seller issued to one buyer, scattered
 among its other invoices.
 
-  synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None) -> everything a Prover file
-  needs, plus what a verifier should see come out.
+  synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None, lines=None) -> everything a
+  Prover file needs, plus what a verifier should see come out.
 
 In a format where the device code is optional, every second invoice is written without one.
 
@@ -57,11 +58,13 @@ def tampers(fmt=MONTENEGRO):
     return TAMPERS + (TAMPERS_DEVICE_REQUIRED if fmt.device_required else ()) + TAMPERS_ANY_FORMAT
 
 
-def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None):
+def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None, lines=None):
     """k signed pairs of which the first `count` (default: all) are invoices to one buyer. Slots
     after `count` hold invoices to other buyers, one of them a credit note: a prover's filler,
     which must not matter. `shape`: the requests are written in that shape
-    (leaf_request_inputs.shaped). Returns a dict."""
+    (leaf_request_inputs.shaped). `lines`: the number of lines of the invoices, one number for
+    all of them or {position: lines}; an invoice of one line takes about 1,700 bytes and every
+    further line about 145. Returns a dict."""
     rng = random.Random(secrets.randbits(64))
     taxpayer, authority = new_key(), new_key()
     base = core_fields(rng, fmt)
@@ -83,6 +86,10 @@ def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None):
         c["net"] = rng.randrange(1000, 300000)
         c["buyer"] = dict(buyer)
         c["no_device"] = (not fmt.device_required) and n % 2 == 0
+        if isinstance(lines, dict):
+            c["lines"] = lines.get(n, 1)
+        elif lines:
+            c["lines"] = lines
         if n >= count:
             c["buyer"]["num"] = number(rng)
             if n == k - 1:
@@ -150,8 +157,9 @@ def synthetic(k, tamper=None, count=None, fmt=MONTENEGRO, shape=None):
     }
 
 
-def prover_toml(s):
-    out = batch_inputs.invoice_toml(s["invoices"], s["taxpayer_modulus"], s["issuer_modulus"])
+def prover_toml(s, longest=batch_inputs.M):
+    """The Prover file of a circuit about one buyer that reads requests of up to `longest` bytes."""
+    out = batch_inputs.invoice_toml(s["invoices"], s["taxpayer_modulus"], s["issuer_modulus"], longest)
     out += f'count = "{s["count"]}"\nbuyer = "{hex(s["buyer"])}"\n'
     out += f'threshold_cents = "{s["threshold"]}"\ncontext = "{hex(s["context"])}"\nyear = "{s["year"]}"\n'
     return out

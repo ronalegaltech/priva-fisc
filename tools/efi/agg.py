@@ -123,35 +123,43 @@ def fields_of(path):
     return [int.from_bytes(data[i:i + 32], "big") for i in range(0, len(data), 32)]
 
 
-_vk_hash = {}
+_keys = {}
 
 
-def vk_hash(name, target="noir-recursive"):
-    """Key hash of a circuit in this repository, derived locally. Deriving the key of a large
-    circuit takes a quarter of a minute, and an aggregate names several, so the value is kept
-    beside the compiled circuit, under the digest of the compiled file it was derived from: it is
-    derived again whenever that file changes."""
-    if (name, target) not in _vk_hash:
+def key_file(name, target="evm"):
+    """Path of the verification key of a circuit in this repository, derived locally (its hash is
+    the file `vk_hash` beside it). Deriving the key of a large circuit takes a quarter of a
+    minute, and a verifier may have to try several circuits, so the key is kept beside the
+    compiled circuit, under the digest of the compiled file it was derived from: it is derived
+    again whenever that file changes. Whoever can write there can replace the compiled circuit as
+    well, so keeping the key adds nothing to what the verifier already relies on."""
+    if (name, target) not in _keys:
         circuit = compiled(name)
         with open(circuit, "rb") as f:
             digest = hashlib.sha256(f.read()).hexdigest()
-        kept = os.path.join(os.path.dirname(circuit), f"key_hash_{target}.json")
-        value = None
+        kept = os.path.join(os.path.dirname(circuit), f"key_{target}")
+        note = os.path.join(kept, "circuit.json")
+        fresh = False
         try:
-            with open(kept) as f:
-                saved = json.load(f)
-            if saved.get("circuit") == digest:
-                value = int(saved["key_hash"], 16)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            with open(note) as f:
+                fresh = (json.load(f).get("circuit") == digest
+                         and all(os.path.isfile(os.path.join(kept, n)) for n in ("vk", "vk_hash")))
+        except (OSError, ValueError, AttributeError):
             pass
-        if value is None:
-            with tempfile.TemporaryDirectory() as tmp:
-                run(["bb", "write_vk", "-b", circuit, "-o", tmp, "-t", target], what=f"key of {name}")
-                value = fields_of(os.path.join(tmp, "vk_hash"))[0]
-            with open(kept, "w") as f:
-                json.dump({"circuit": digest, "key_hash": hex(value)}, f)
-        _vk_hash[(name, target)] = value
-    return _vk_hash[(name, target)]
+        if not fresh:
+            os.makedirs(kept, exist_ok=True)
+            if os.path.exists(note):
+                os.remove(note)   # the key below is not complete until the note is written again
+            run(["bb", "write_vk", "-b", circuit, "-o", kept, "-t", target], what=f"key of {name}")
+            with open(note, "w") as f:
+                json.dump({"circuit": digest}, f)
+        _keys[(name, target)] = os.path.join(kept, "vk")
+    return _keys[(name, target)]
+
+
+def vk_hash(name, target="noir-recursive"):
+    """Key hash of a circuit in this repository, derived locally (see key_file)."""
+    return fields_of(os.path.join(os.path.dirname(key_file(name, target)), "vk_hash"))[0]
 
 
 def hexlist(values):
@@ -189,11 +197,10 @@ def verify_proof(name, proof, public_inputs, target="evm"):
     """True if `proof` (bytes) is a valid proof of circuit `name` for these public inputs (bytes),
     under a verification key derived locally."""
     with tempfile.TemporaryDirectory() as tmp:
-        run(["bb", "write_vk", "-b", compiled(name), "-o", tmp, "-t", target], what=f"key of {name}")
         for label, data in (("proof", proof), ("public_inputs", public_inputs)):
             with open(os.path.join(tmp, label), "wb") as f:
                 f.write(data)
-        return bb_verifies(os.path.join(tmp, "vk"), os.path.join(tmp, "proof"), os.path.join(tmp, "public_inputs"), target)
+        return bb_verifies(key_file(name, target), os.path.join(tmp, "proof"), os.path.join(tmp, "public_inputs"), target)
 
 
 def bb_verifies(vk, proof, public_inputs, target="evm"):
@@ -218,6 +225,7 @@ def parse_context(text):
 
 
 BATCH_SIZES = (1, 10)
+ONE_BUYER_SLOTS = (1, 2, 4, 7, 10)   # the numbers of slots the circuits about one buyer have (formats.py)
 AGGREGATE_VALUES = 12
 
 
@@ -233,33 +241,42 @@ def kind_of(values):
 
 def one_buyer_slots(values):
     """Slots of the circuit behind a proof about one buyer, or None if the values are of another kind."""
-    return next((k for k in BATCH_SIZES if len(values) == 7 + 2 * k), None)
+    return next((k for k in ONE_BUYER_SLOTS if len(values) == 7 + 2 * k), None)
 
 
 def verify_one_buyer(proof_dir, k, name=None):
     """True if the proof verifies under the key derived here from the circuit `name`
     (noir/debtor_k{k}, the Montenegrin one, unless another is named)."""
     name = name or f"debtor_k{k}"
-    with tempfile.TemporaryDirectory() as tmp:
-        run(["bb", "write_vk", "-b", compiled(name), "-o", tmp, "-t", "evm"], what=f"key of {name}")
-        return bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
-                           os.path.join(proof_dir, "public_inputs"))
+    return bb_verifies(key_file(name), os.path.join(proof_dir, "proof"), os.path.join(proof_dir, "public_inputs"))
+
+
+def one_buyer_circuit_of(proof_dir, k):
+    """(format, circuit name) of the circuit about one buyer the proof in `proof_dir` verifies
+    under, or None. Each format, and each length of request, has its own circuit and key; the
+    proof is tried under the key, derived here, of every circuit with `k` slots. What a
+    statement.json names only decides which is tried first; after that the circuits for shorter
+    requests come first, whose keys are quick to derive."""
+    hint = {}
+    try:
+        with open(os.path.join(proof_dir, "statement.json")) as f:
+            hint = json.load(f)
+    except (OSError, ValueError):
+        pass
+    if not isinstance(hint, dict):
+        hint = {}
+    candidates = [(f, longest, name) for f in formats.ALL for slots, longest, name in f.one_buyer_circuits if slots == k]
+    candidates.sort(key=lambda c: (c[2] != hint.get("circuit"), c[1], c[0].name != hint.get("format")))
+    for f, _, name in candidates:
+        if verify_one_buyer(proof_dir, k, name):
+            return f, name
+    return None
 
 
 def one_buyer_format(proof_dir, k):
-    """The format whose circuit the proof about one buyer in `proof_dir` verifies under, or None.
-    Each format has its own circuit and key; the proof is tried under each key, derived here. The
-    format a statement.json names only decides which one is tried first."""
-    hint = None
-    try:
-        with open(os.path.join(proof_dir, "statement.json")) as f:
-            hint = json.load(f).get("format")
-    except (OSError, ValueError, AttributeError):
-        pass
-    for f in sorted(formats.ALL, key=lambda f: f.name != hint):
-        if verify_one_buyer(proof_dir, k, f.one_buyer_circuit(k)):
-            return f
-    return None
+    """The format whose circuit the proof about one buyer in `proof_dir` verifies under, or None."""
+    found = one_buyer_circuit_of(proof_dir, k)
+    return found[0] if found else None
 
 
 def verify_batch(proof_dir):
@@ -267,11 +284,8 @@ def verify_batch(proof_dir):
     k = kind_of(fields_of(os.path.join(proof_dir, "public_inputs")))
     if k == "aggregate":
         return False
-    name = f"batch_k{k}"
-    with tempfile.TemporaryDirectory() as tmp:
-        run(["bb", "write_vk", "-b", compiled(name), "-o", tmp, "-t", "evm"], what=f"key of {name}")
-        return bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
-                           os.path.join(proof_dir, "public_inputs"))
+    return bb_verifies(key_file(f"batch_k{k}"), os.path.join(proof_dir, "proof"),
+                       os.path.join(proof_dir, "public_inputs"))
 
 
 def fic_int(invoice):
@@ -531,10 +545,8 @@ def verify(proof_dir, families=None):
     families of leaf circuits the proof may come from; by default any family here will do."""
     st = decode(fields_of(os.path.join(proof_dir, "public_inputs")))
     problems = []
-    with tempfile.TemporaryDirectory() as tmp:
-        run(["bb", "write_vk", "-b", compiled("agg_top"), "-o", tmp, "-t", "evm"], what="top key")
-        accepted = bb_verifies(os.path.join(tmp, "vk"), os.path.join(proof_dir, "proof"),
-                               os.path.join(proof_dir, "public_inputs"))
+    accepted = bb_verifies(key_file("agg_top"), os.path.join(proof_dir, "proof"),
+                           os.path.join(proof_dir, "public_inputs"))
     if not accepted:
         problems.append("the top proof does not verify")
     family = family_of(fields_of(os.path.join(proof_dir, "public_inputs")), families)

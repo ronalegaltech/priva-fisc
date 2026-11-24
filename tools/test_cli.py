@@ -14,7 +14,10 @@ time, so only the 1-invoice circuits are used.
 
 With --long, only this: an invoice of 30 lines, whose request is too long for the batch circuit,
 is proved from its files as an aggregate of one leaf, verified and spot-checked; the statement
-about its buyer is refused with the reason; an invoice too long for any circuit is refused.
+about its buyer is proved with the circuit for requests of that length, verified and
+spot-checked; more long invoices to one buyer than a proof holds are refused with the reason, and
+so is an Albanian invoice of 10 lines (that format has circuits for short requests only); an
+invoice too long for any circuit is refused.
 """
 import argparse
 import json
@@ -28,6 +31,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "efi"))
+import formats  # noqa: E402
 from efi_common import canonical_without_signature, new_key  # noqa: E402
 from leaf_request_inputs import build_request, core_fields, receipt_time, respell, shaped, signed_xml  # noqa: E402
 from leaf_response_inputs import synthetic_soap  # noqa: E402
@@ -58,13 +62,13 @@ def long_invoices():
         print(f"{'PASS' if good else 'FAIL'}  {label}" + (f"  [{detail}]" if detail and not good else ""), flush=True)
 
     with tempfile.TemporaryDirectory() as d:
-        def pair(invoice, name):
+        def pair(invoice, name, fmt=formats.MONTENEGRO):
             paths = os.path.join(d, name + "_request.xml"), os.path.join(d, name + "_receipt.xml")
             with open(paths[0], "wb") as f:
-                f.write(signed_xml(taxpayer, build_request(taxpayer, invoice, tricky=False)))
+                f.write(signed_xml(taxpayer, build_request(taxpayer, invoice, tricky=False, fmt=fmt)))
             answer = (invoice["uuid"].encode(), receipt_time(invoice).encode(), str(uuid.uuid4()).encode(), str(uuid.uuid4()).encode())
             with open(paths[1], "wb") as f:
-                f.write(synthetic_soap(authority, answer))
+                f.write(synthetic_soap(authority, answer, fmt))
             return paths
 
         c = dict(core_fields(rng), ordinal=1, lines=30)
@@ -85,9 +89,43 @@ def long_invoices():
         report("the opening matches the proof, as its first invoice", code == 0 and out.strip() == "MATCH", out[-200:])
         code, out = tool("check", "--opening", shown, "--proof", proof, "--ordinal", "2")
         report("asked for another ordinal, no match", code == 1 and out.strip() == "NO MATCH", out[-200:])
-        code, out = pf("prove", "--buyer", "TIN:12345678", "--out", os.path.join(d, "buyer"), *args)
-        report("the statement about its buyer is refused, with the reason",
-               code != 0 and "reads requests of up to 2048" in out and not os.path.exists(os.path.join(d, "buyer", "proof")), out[-300:])
+
+        # The same invoice as a statement about its buyer: the tool takes the circuit for requests
+        # of that length, which holds four of them.
+        to_buyer, buyer_record, buyer_shown = (os.path.join(d, n) for n in ("buyer", "buyer_record.json", "buyer_shown.json"))
+        code, out = pf("prove", "--buyer", "TIN:12345678", "--out", to_buyer, "--keep", buyer_record, *args)
+        report("the statement about its buyer: proved, with the circuit for requests of that length",
+               code == 0 and "debtor_k4_m8192" in out, out[-300:])
+        code, out = pf("verify", to_buyer, "--context", "0x91", "--buyer", "TIN:12345678")
+        report("that proof is valid for the buyer expected (exit 2)",
+               code == 2 and "PROOF VALID" in out and "debtor_k4_m8192" in out and "(the one expected)" in out, out[-400:])
+        code, out = pf("verify", to_buyer, "--context", "0x91", "--buyer", "TIN:87654321")
+        report("another buyer expected (exit 6)", code == 6 and "issued to somebody else" in out, out[-300:])
+        code, out = tool("reveal", "--record", buyer_record, "--index", "0", "--out", buyer_shown)
+        report("the taxpayer opens the invoice of that proof", code == 0 and os.path.exists(buyer_shown), out[-200:])
+        code, out = tool("check", "--opening", buyer_shown, "--proof", to_buyer, "--index", "0")
+        report("the opening matches the proof about the buyer", code == 0 and out.strip() == "MATCH", out[-200:])
+
+        # Three invoices of 60 lines to one buyer: a proof holds two requests of that length.
+        many = ()
+        for n in range(3):
+            many += pair(dict(core_fields(rng), ordinal=n + 1, lines=60), f"many{n}")
+        code, out = pf("prove", "--buyer", "TIN:12345678", "--out", os.path.join(d, "many"), "--threshold", "1.00",
+                       "--year", str(c["year"]), "--context", "0x93", *many)
+        report("three invoices of 60 lines to one buyer do not fit one proof: refused, with what a proof holds",
+               code != 0 and "do not fit one proof about one buyer" in out and "or 2 of up to 16,384" in out
+               and not os.path.exists(os.path.join(d, "many", "proof")), out[-400:])
+
+        # An Albanian invoice of 10 lines to one buyer: for that format, which has not been
+        # checked against a real message, there are circuits for short requests only.
+        al = dict(core_fields(rng, formats.ALBANIA), ordinal=1, lines=10, no_device=True,
+                  buyer={"type": "NUIS", "num": "K12345678A"})
+        al_proof = os.path.join(d, "al")
+        code, out = pf("prove", "--buyer", "NUIS:K12345678A", "--out", al_proof, "--threshold", "1.00",
+                       "--year", str(al["year"]), "--context", "0x94", *pair(al, "al", formats.ALBANIA))
+        report("an Albanian invoice of 10 lines to one buyer: refused, with what a proof holds in that format",
+               code != 0 and "do not fit one proof about one buyer" in out and "10 requests of up to 2,048 bytes" in out
+               and "4,096" not in out and not os.path.exists(os.path.join(al_proof, "proof")), out[-400:])
 
         huge = dict(core_fields(rng), ordinal=1, lines=240)
         code, out = pf("prove", "--out", os.path.join(d, "huge"), "--threshold", "1.00", "--year", str(huge["year"]),
