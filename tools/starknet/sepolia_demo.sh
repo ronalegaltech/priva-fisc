@@ -13,9 +13,10 @@
 #   sncast account create --network sepolia --name pf-demo
 # and send test STRK to the address it prints. The run of 20 Nov 2026 took 545 STRK at a gas price
 # of about 28 * 10^9 fri: about 135 STRK to declare each of the three verifiers, 53 for the ECIP
-# helper, 17 for the registry, about 24 for each proof. PF_SKIP_AGGREGATE=1 and PF_SKIP_ONE_BUYER=1
-# each leave out one kind of proof and its verifier, about 160 STRK; with both the run takes about
-# 230 STRK.
+# helper, 17 for the registry, about 24 for each proof. The run of 24 Nov 2026, after the circuits
+# had changed, took 498 STRK at 28.4 * 10^9 fri: the helper was already declared and the account
+# already there. PF_SKIP_AGGREGATE=1 and PF_SKIP_ONE_BUYER=1 each leave out one kind of proof and
+# its verifier, about 160 STRK; with both the run takes about 230 STRK.
 #
 # The script can be run again after a failure: a class that is already declared is reused, so is a
 # registry already deployed by an earlier run (its address is kept in PF_STATE), and a proof the

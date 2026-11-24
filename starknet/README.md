@@ -29,39 +29,56 @@ invoices the registry has already recorded. The
 cost of an aggregate does not depend on how many invoices it covers. Starknet documents a limit of
 1.11 * 10^9 L2 gas per transaction.
 
-The same flow ran on the public test network (Starknet Sepolia) on 20 Nov 2026, with
-`tools/starknet/sepolia_demo.sh`. The invoices were invented and signed by throw-away keys.
-
-The addresses and transactions below belong to that run and to the circuits as they stood that
-day. The circuits have changed since (the request reader on 22 Nov 2026, the leaves of an
-aggregate on 23 Nov 2026) and with them their verification keys: the verifiers deployed on
-Sepolia do not accept proofs made with today's circuits, the registry deployed there expects the
-key hash of the one leaf circuit of that day, and the verifier packages in this directory,
-generated from today's circuits, are not the ones deployed there. Nothing has been deployed to
-Sepolia again.
+The same flow ran on the public test network (Starknet Sepolia) on 24 Nov 2026, with
+`tools/starknet/sepolia_demo.sh`, from a separate clone of this repository at commit `4096432`,
+after the full test run had passed in that clone. The invoices were invented and signed by
+throw-away keys.
 
 | | Transaction | L2 gas | Fee |
 |---|---|---|---|
-| batch of 10 | `0x05bde60c82f855751e1075f829f7254cc1f7bdeabf6a0283754d8f44491c1085` | 865,198,560 | 24.2 STRK |
-| 3 invoices to one buyer | `0x03c045eeaac290b0abdef1d7f7a8b96cca07aed4b9094b8e36a8f60681a18f93` | 861,086,240 | 24.1 STRK |
-| aggregate of 25 | `0x05d18977a64e6db8094fa8c630eaf6bcc0d9a0cc67133b38896b55d96e068ee0` | 822,454,160 | 23.0 STRK |
+| batch of 10 | `0x0343ddea6b2747fc6c56b63f7297423fdd5a5df319b97008e8e06ca04e4a5fb9` | 865,078,560 | 24.6 STRK |
+| 3 invoices to one buyer | `0x02be8ba175886aeb8ff11388957ca4e0c49b62ecbe59d87dca5f9c779d5ed148` | 859,726,240 | 24.4 STRK |
+| aggregate of 25 | `0x03eed2cf64b0e37e11051ae6249106e4dfc5dcf20ba965f614c51e457834600e` | 821,174,160 | 23.3 STRK |
 
-The registry is at `0x007963f970475a3c410b260b6b3335f4449f87a0f8e5e4961cb1e93df296cf19` and holds
+The registry is at `0x07b639f0719076fadfd14a04f2d7b2105b1b3a468f273edbaf32df174992fe13` and holds
 three attestations. Each proof was submitted a second time and refused with
 `invoice already presented`, and so were the three invoices of the batch proved again as invoices
-issued to their buyer. Nothing is deployed to mainnet.
+issued to their buyer. The three receipts and the number of attestations were read back from two
+public nodes. Nothing is deployed to mainnet.
 
-Declaring is most of the cost: 53 STRK for the ECIP helper, 135, 133 and 135 STRK for the three
-verifiers and 17 STRK for the registry (locally about 1.9 * 10^9 L2 gas, 4.8 * 10^9 each and
-0.6 * 10^9). With the account, the deployment of the registry and the listing of keys the whole
-run came to 545 STRK at a gas price of about 28 * 10^9 fri. With the batch alone it would be about
-230 STRK. This is test-network money; what the same gas costs on mainnet has not been measured.
+The classes declared in that run are the packages of this directory as they stood at that commit.
+With the toolchain of `tools/toolchain.env`, `sncast utils class-hash --contract-name <name>` in
+`pf_registry` gives the hashes they were declared under:
 
-Two things to know about that run. sncast's own fee bound (the estimate plus a half) was refused by
-Sepolia for a proof (`maximum allowed gas amount: 1210000000`), so the script estimates first and
-sends with bounds it works out itself. Two attempts stopped there before the script was changed;
-each had already listed the key of its throw-away signer, so the registry lists five keys and has
-attestations under three of them.
+| Contract | Class hash |
+|---|---|
+| `PfBatchK10Verifier` | `0x0755e3a819a0b3aed0bf43b23a34ba8533e2e1136856846f4ea16338cf5c21e1` |
+| `PfAggTopVerifier` | `0x03f484b510c1eded2b75c2793dde907eb440d58b7f27f7e0a6dc473348757527` |
+| `PfDebtorK10Verifier` | `0x04c557d02d2362a4b76760464114dcf2d31758a9625d55572b3662290ee423dd` |
+| `PrivaFiscRegistry` | `0x01aa4f092d0aa924696159d4a78dd3e57bc20148c182124e5540ee845cf7c73b` |
+
+A verifier holds the verification key of its circuit, and the registry holds the values an
+aggregate must name for the circuits it was built from. After a change to one of these circuits
+the packages here are generated again and the contracts on Sepolia stay as they were, until the
+script is run again: the hashes above tell whether the two still agree.
+
+Declaring is most of the cost: 137, 135 and 137 STRK for the three verifiers and 18 STRK for the
+registry (4.81, 4.74 and 4.81 * 10^9 L2 gas, and 0.62 * 10^9). The ECIP helper was already
+declared (53 STRK on 20 Nov 2026) and the account already existed. With the deployment of the
+registry and the listing of three keys the run came to 498 STRK at a gas price of 28.4 * 10^9
+fri. This is test-network money; what the same gas costs on mainnet has not been measured.
+
+An earlier run, on 20 Nov 2026, put the circuits of that day on Sepolia: its registry is at
+`0x007963f970475a3c410b260b6b3335f4449f87a0f8e5e4961cb1e93df296cf19`, and with the helper and the
+account it came to 545 STRK. The circuits changed afterwards (the request reader on 22 Nov 2026,
+the leaves of an aggregate on 23 Nov 2026) and with them their verification keys, so the
+contracts of that run accept proofs of the circuits of that day only.
+
+Two things to know about the earlier run. sncast's own fee bound (the estimate plus a half) was
+refused by Sepolia for a proof (`maximum allowed gas amount: 1210000000`), so the script estimates
+first and sends with bounds it works out itself. Two attempts stopped there before the script was
+changed; each had already listed the key of its throw-away signer, so the earlier registry lists
+five keys and has attestations under three of them.
 
 The registry records the context a proof was made for; it cannot know which context a relying
 party issued. The first attestation in a context decides which kind of proof that context takes,

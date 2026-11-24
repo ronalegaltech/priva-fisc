@@ -332,19 +332,19 @@ invoice and 3,717,548 for ten. The limit of the setup used is 4,194,304 gates, a
 circuits were sized to it: the leaf of three long requests sits 4% under it.
 
 On Starknet each kind of proof is accepted in one transaction: about 865M L2 gas for the batch of
-10, 861M for 3 invoices to one buyer and 822M for an aggregate of 25, under the documented limit
+10, 860M for 3 invoices to one buyer and 821M for an aggregate of 25, under the documented limit
 of 1.11 * 10^9 per transaction. The figures are from the public test network (Sepolia, run of
-20 Nov 2026 with invented invoices; addresses and fees in `starknet/README.md`) and agree with a
+24 Nov 2026 with invented invoices; addresses and fees in `starknet/README.md`) and agree with a
 local network to within a quarter of a percent. The on-chain cost of an aggregate does not grow
 with the number of invoices. Nothing has been deployed to mainnet.
 
-The contracts on Sepolia were built from the circuits as they stood on 20 Nov 2026. A verifier
+The contracts of that run were built from the circuits as they stood on 24 Nov 2026. A verifier
 holds the verification key of its circuit, and the registry holds the values an aggregate must
-name for the circuits it was built from. The circuits have changed since (the request reader on
-22 Nov 2026, the leaves of an aggregate on 23 Nov 2026), so the contracts at the addresses in
-`starknet/README.md` accept proofs of the old circuits only. The verifiers in this repository are
-generated from today's circuits and have been run on a local network (864M, 860M and 822M L2 gas
-for the three kinds of proof); they have not been deployed to Sepolia.
+name for the circuits it was built from, so a later change to one of these circuits leaves the
+contracts on Sepolia behind until they are declared again; `starknet/README.md` lists the class
+hashes to compare. That happened once: the registry of the first run (20 Nov 2026) accepts
+proofs of the circuits of that day only. The circuits about one buyer for longer requests and
+the Albanian circuits have no verifier and are not on Sepolia.
 
 ## Limits
 
